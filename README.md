@@ -1,3 +1,4 @@
+
 # sediment-yield-analysis
 Supplementary code and outputs for sediment yield analysis in Gilgel Abay and Gumara watersheds.
 
@@ -30,4 +31,5 @@ This repository is licensed under the MIT License (see `LICENSE`).
 
 ## Citation
 Please cite this repository as:
-> Bitew, K. (2025). Sediment Yield Analysis Code for Gilgel Abay and Gumara Watersheds. GitHub Repository. Available at: https://github.com/kindiebitew/sediment-yield-analysis
+> Worku, Kindie B. (2025). Sediment Yield Analysis Code for Gilgel Abay and Gumara Watersheds. GitHub Repository. Available at: https://github.com/kindiebitew/sediment-yield-analysis
+
