@@ -4,7 +4,7 @@ Supplementary code and outputs for sediment yield analysis in Gilgel Abay and Gu
 
 # Sediment Yield Analysis for Gilgel Abay and Gumara Watersheds
 
-This repository contains Python scripts for analyzing sediment yields in the Gilgel Abay and Gumara watersheds, as described in the manuscript submitted to *Journal of Hydrology* (Bitew, 2025).
+This repository contains Python scripts for analyzing sediment yields in the Gilgel Abay and Gumara watersheds, as described in the manuscript submitted to *Journal of Hydrology* (Worku, 2025).
 
 ## Repository Structure
 - `code/`: Contains Python scripts for data processing and analysis.
