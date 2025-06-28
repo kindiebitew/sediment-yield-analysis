@@ -2,7 +2,7 @@
 
  ## Repository Structure
  - `code/feature_importance.py`: Generates Figure 6 (feature importance bar plot).
- - `code/model_performance.py`: Generates Figure 5 (model evaluation).
+ - `code/model_performance.py`: Generates Figure 4 and 5 (model evaluation).
  - `code/annual_sediment_yield.py`: Generates Figure 7 (annual yields).
  - `code/monthly_sediment_yield.py`: Generates Figure 8 (monthly yields).
  - `code/seasonal_sediment_yield.py`: Generates Figure 9 (seasonal yields).
