@@ -19,7 +19,7 @@ plt.rcParams['font.family'] = 'Times New Roman'
 plt.rcParams['font.size'] = 16
 
 # Define watershed parameters and file paths
-# Note: Paths are placeholders; actual data stored locally due to MoWE/ABAO restrictions
+# Note: Paths are placeholders; actual data stored locally and can be 'r"C:\Users\acer\Documents\sediment-yield-analysis\data\...' 
 # Area (km²) from watershed delineations; max values set for plot scaling based on data ranges
 data_paths = {
     'Gilgel Abay': {
@@ -314,7 +314,7 @@ def create_figure9(yearly_data, watershed_name, output_plot):
         watershed_name (str): Name of watershed.
         output_plot (str): Path to save plot.
     """
-    print(f"Generating Figure 9 for {watershed_name}...")
+    print(f"Generating Figure 10 for {watershed_name}...")
     
     # Filter data for 2000–2020 (paper Section 3.5)
     yearly_data = yearly_data[(yearly_data.index >= 2000) & (yearly_data.index <= 2020)]
@@ -416,8 +416,8 @@ for watershed_name, params in data_paths.items():
             params['yield_max']
         )
         
-        # Generate Figure 9
-        create_figure9(yearly_data, watershed_name, params['output_plot_fig9'])
+        # Generate Figure 10
+        create_figure9(yearly_data, watershed_name, params['output_plot_fig10'])
         
     except Exception as e:
         print(f"Error processing {watershed_name}: {str(e)}")

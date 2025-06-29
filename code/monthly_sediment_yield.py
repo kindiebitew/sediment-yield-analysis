@@ -1,6 +1,6 @@
 # Script for calculating monthly sediment yields in Gilgel Abay and Gumara watersheds
 # Purpose: Reconstructs sedigraphs (1990–2020) using Quantile Random Forest (QRF) and estimates monthly sediment yields (tonnes/ha/month) for Figure 8 in the paper "Machine Learning-Based
-# Sedigraph Reconstruction for Enhanced Sediment Load Estimation in the Upper Blue Nile Basin."
+# Sedigraph Reconstruction for Enhanced Sediment Yield Estimation in the Upper Blue Nile Basin."
 # Author: Kindie B. Worku and co-authors
 # Data: Intermittent SSC from MoWE/ABAO, continuous hydrological data from EMI
 # Output: Monthly sediment yield CSV files and Figure 8 for each watershed

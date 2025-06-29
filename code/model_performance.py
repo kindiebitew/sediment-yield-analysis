@@ -2,7 +2,7 @@
 # Purpose: Compares Segmented Rating Curve (SRC), Gradient Boosting (GB), Random Forest (RF), and
 # Quantile Random Forest (QRF) models for predicting suspended sediment concentration (SSC) in
 # Gilgel Abay and Gumara watersheds. Generates performance metrics (R², RMSE, MAE, MAPE) and
-# scatter/bar plots for model comparison (paper Section 2.3, Figure X).
+# scatter/bar plots for model comparison (paper Section 2.3, Figure 4 of the paper).
 # Author: Kindie B. Worku and co-authors
 # Data: Intermittent SSC from MoWE/ABAO, sampled at 251 (Gilgel Abay) and 245 (Gumara) points
 # Output: CSV files with model performance and sediment yields, scatter plots, and validation R² bar chart
@@ -398,7 +398,7 @@ plt.savefig(svg_output_path, transparent=True, format='svg', bbox_inches='tight'
 plt.show()
 print(f"Combined scatter plot saved to {combined_output_path} (PNG) and {svg_output_path} (SVG)")
 
-# Validation R² bar chart for model comparison
+# Validation R² bar chart for model comparison for figure 5 in the paper
 models = ['SRC', 'GB', 'RF', 'QRF']
 gilgel_val_r2 = [results_gilgel['Validation R²'].iloc[i] for i in range(4)]
 gumara_val_r2 = [results_gumara['Validation R²'].iloc[i] for i in range(4)]
