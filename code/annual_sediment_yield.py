@@ -1,10 +1,11 @@
-#Script to generate Figure 7: Annual sediment yield, rainfall, and discharge for Gilgel Abay and Gumara watersheds
-#(Section 3.3). Predicts daily SSC (g/L) for 1990–2020 using Quantile Random Forest (QRF) trained on intermittent data,
-#calculates daily sediment yield (t/ha/day), and aggregates annually (t/ha/yr). Produces a combination plot with a bar
-#plot for annual rainfall (mm, reversed axis) and line plots for discharge (m³/s) and sediment yield (t/ha/yr).
-#Outputs include Excel for daily data, CSV for annual data, and publication-quality PNG/SVG plots.
-#Author: Kindie B. Worku
-#Date: 2025-07-07
+# Script to generate Figure 7: Annual sediment yield, rainfall, and discharge for Gilgel Abay and Gumara watersheds
+# (Section 3.3). Predicts daily SSC (g/L) for 1990–2020 using Quantile Random Forest (QRF) trained on intermittent data,
+# calculates daily sediment yield (t/ha/day), and aggregates
+# annually (t/ha/yr). Produces a combination plot with a bar plot for annual rainfall (mm, reversed axis) and line plots
+# for discharge (m³/s) and sediment yield (t/ha/yr). Outputs include Excel for daily data, CSV for annual data, and
+# publication-quality PNG/SVG plots.
+# Author: Kindie B. Worku
+# Date: 2025-07-16
 
 import pandas as pd
 import numpy as np
@@ -129,18 +130,38 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
     if df_inter.empty:
         raise ValueError(f"{watershed_name} intermittent data empty after cleaning")
     
-    # Feature engineering (Section 2.3)
-    df_inter['Log_Discharge'] = np.log1p(df_inter['Discharge'].clip(lower=0))
+    # Feature engineering (Section 2.3) with annual and cumulative rainfall
+    df_inter['Year'] = df_inter['Date'].dt.year
+    df_cont['Year'] = df_cont['Date'].dt.year
+    
+    # Compute Annual Rainfall for intermittent data
+    annual_rainfall_inter = df_inter.groupby('Year')['Rainfall'].sum().reset_index()
+    annual_rainfall_inter.columns = ['Year', 'Annual_Rainfall']
+    df_inter = df_inter.merge(annual_rainfall_inter, on='Year', how='left')
+    
+    # Compute Cumulative Rainfall for intermittent data
+    df_inter = df_inter.sort_values('Date')
+    df_inter['Cumulative_Rainfall'] = df_inter['Rainfall'].cumsum()
+    
+    # Compute Annual Rainfall for continuous data
+    annual_rainfall_cont = df_cont.groupby('Year')['Rainfall'].sum().reset_index()
+    annual_rainfall_cont.columns = ['Year', 'Annual_Rainfall']
+    df_cont = df_cont.merge(annual_rainfall_cont, on='Year', how='left')
+    
+    # Compute Cumulative Rainfall for continuous data
+    df_cont = df_cont.sort_values('Date')
+    df_cont['Cumulative_Rainfall'] = df_cont['Rainfall'].cumsum()
+    
+    # Feature engineering (rolling means and lags)
     df_inter['MA_Discharge_3'] = df_inter['Discharge'].rolling(window=3, min_periods=1).mean().bfill()
     df_inter['Lag_Discharge'] = df_inter['Discharge'].shift(1).bfill()
     df_inter['Lag_Discharge_3'] = df_inter['Discharge'].shift(3).bfill()
-    df_cont['Log_Discharge'] = np.log1p(df_cont['Discharge'].clip(lower=0))
     df_cont['MA_Discharge_3'] = df_cont['Discharge'].rolling(window=3, min_periods=1).mean().bfill()
     df_cont['Lag_Discharge'] = df_cont['Discharge'].shift(1).bfill()
     df_cont['Lag_Discharge_3'] = df_cont['Discharge'].shift(3).bfill()
     
     # Select predictors (Section 3.2)
-    predictors = ['Log_Discharge', 'MA_Discharge_3', 'Lag_Discharge', 'Lag_Discharge_3', 'Rainfall', 'ETo']
+    predictors = ['Discharge', 'MA_Discharge_3', 'Lag_Discharge', 'Lag_Discharge_3', 'Rainfall', 'ETo', 'Annual_Rainfall', 'Cumulative_Rainfall']
     X_inter = df_inter[predictors]
     y_inter = df_inter['SSC']
     X_cont = df_cont[predictors]
@@ -164,7 +185,7 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
     
     # Create output DataFrame
     df_cont['SSC'] = ssc_pred
-    return df_cont[['Date', 'Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC']]
+    return df_cont[['Date', 'Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC', 'Annual_Rainfall', 'Cumulative_Rainfall']]
 
 def calculate_sediment_yield(df, watershed_name, area_km2, output_dir):
     """
@@ -189,7 +210,7 @@ def calculate_sediment_yield(df, watershed_name, area_km2, output_dir):
     df['Sediment_Yield'] = df['Discharge'] * df['SSC'] * LOAD_FACTOR / (area_km2 * 100)
     
     # Drop invalid data
-    df = df.dropna(subset=['Date', 'Rainfall', 'Discharge', 'SSC', 'Sediment_Yield'])
+    df = df.dropna(subset=['Date', 'Rainfall', 'Discharge', 'SSC', 'Sediment_Yield', 'Annual_Rainfall', 'Cumulative_Rainfall'])
     
     if df.empty:
         raise ValueError(f"{watershed_name} data empty after cleaning")
@@ -238,7 +259,7 @@ def process_annual_data(df, watershed_name):
 
 def create_figure7(yearly_data_dict, output_dir):
     """
-    Generate Figure 7: Combination plot with bar plot for annual rainfall (reversed axis) and line plots for discharge
+    Generate Figure 7: Combination plot with a bar plot for annual rainfall (mm, reversed axis) and line plots for discharge
     and sediment yield (Section 3.3).
     Args:
         yearly_data_dict (dict): Dictionary with annual data for each watershed.
