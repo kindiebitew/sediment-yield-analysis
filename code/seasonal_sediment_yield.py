@@ -1,10 +1,11 @@
-#Script to generate Figure 9: Seasonal sediment yield for Gilgel Abay and Gumara watersheds (Section 3.4).
-#Predicts daily SSC (g/L) for 1990–2020 using Quantile Random Forest (QRF) trained on intermittent data,
-#calculates daily sediment yield (t/ha/day), aggregates to seasonal means (Wet: June 1–Oct 31, Dry: Nov 1–May 31)
-#in t/ha/yr, and produces side-by-side plots of mean sediment yield by Julian Day with IQR bands.
-#Outputs include Excel for daily data, and publication-quality PNG plots.
-#Author: Kindie B. Worku
-#Date: 2025-07-07
+# Script to generate Figure 9: Seasonal sediment yield for Gilgel Abay and Gumara watersheds (Section 3.4).
+# Predicts daily SSC (g/L) for 1990–2020 using Quantile Random Forest (QRF) trained on intermittent data,
+# calculates daily sediment yield (t/ha/day),
+# aggregates to seasonal means (Wet: June 1–Oct 31, Dry: Nov 1–May 31) in t/ha/yr, and produces side-by-side
+# plots of mean sediment yield by Julian Day with IQR bands.
+# Outputs include Excel for daily data, CSV for seasonal data, and publication-quality PNG/SVG plots.
+# Author: Kindie B. Worku
+# Date: 2025-07-16
 
 import pandas as pd
 import numpy as np
@@ -28,7 +29,7 @@ plt.rcParams['font.size'] = 16
 WATERSHED_CONFIG = {
     'Gilgel Abay': {
         'intermittent': Path(r"C:\Users\worku\Documents\sediment-yield-analysis\data\Intermittent_data.xlsx"),
-        'continuous': Path(r"C:\Users\worku\Documents\sediment-yield-analysis\data\continuous_data.xlsx"),
+        'continuous': Path(r"C:\Users\worku\Documents\sediment-yield-analysis\data\continuous_data.csv"),
         'area_km2': 1664,
         'yield_max': 80,
         'output_dir': Path(r"C:\Users\worku\Documents\sediment-yield-analysis\outputs"),
@@ -67,7 +68,7 @@ LOAD_FACTOR = 86.4  # Converts m³/s × g/L to t/day (86,400 s/day × 10⁻⁶ t
 
 def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, is_excel_inter=False):
     """
-    Predict daily SSC (g/L) for 1990–2020 using QRF trained on intermittent data.
+    Predict daily SSC (g/L) for 1990–2020 using QRF trained on intermittent data, including cumulative and annual rainfall.
     Args:
         intermittent_path (Path): Path to intermittent data (Excel or CSV).
         continuous_path (Path): Path to continuous data (Excel or CSV).
@@ -129,18 +130,38 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
     if df_inter.empty:
         raise ValueError(f"{watershed_name} intermittent data empty after cleaning")
     
-    # Feature engineering (Section 2.3)
-    df_inter['Log_Discharge'] = np.log1p(df_inter['Discharge'].clip(lower=0))
+    # Feature engineering (Section 2.3) with annual and cumulative rainfall
+    df_inter['Year'] = df_inter['Date'].dt.year
+    df_cont['Year'] = df_cont['Date'].dt.year
+    
+    # Compute Annual Rainfall for intermittent data
+    annual_rainfall_inter = df_inter.groupby('Year')['Rainfall'].sum().reset_index()
+    annual_rainfall_inter.columns = ['Year', 'Annual_Rainfall']
+    df_inter = df_inter.merge(annual_rainfall_inter, on='Year', how='left')
+    
+    # Compute Cumulative Rainfall for intermittent data
+    df_inter = df_inter.sort_values('Date')
+    df_inter['Cumulative_Rainfall'] = df_inter['Rainfall'].cumsum()
+    
+    # Compute Annual Rainfall for continuous data
+    annual_rainfall_cont = df_cont.groupby('Year')['Rainfall'].sum().reset_index()
+    annual_rainfall_cont.columns = ['Year', 'Annual_Rainfall']
+    df_cont = df_cont.merge(annual_rainfall_cont, on='Year', how='left')
+    
+    # Compute Cumulative Rainfall for continuous data
+    df_cont = df_cont.sort_values('Date')
+    df_cont['Cumulative_Rainfall'] = df_cont['Rainfall'].cumsum()
+    
+    # Feature engineering (rolling means and lags)
     df_inter['MA_Discharge_3'] = df_inter['Discharge'].rolling(window=3, min_periods=1).mean().bfill()
     df_inter['Lag_Discharge'] = df_inter['Discharge'].shift(1).bfill()
     df_inter['Lag_Discharge_3'] = df_inter['Discharge'].shift(3).bfill()
-    df_cont['Log_Discharge'] = np.log1p(df_cont['Discharge'].clip(lower=0))
     df_cont['MA_Discharge_3'] = df_cont['Discharge'].rolling(window=3, min_periods=1).mean().bfill()
     df_cont['Lag_Discharge'] = df_cont['Discharge'].shift(1).bfill()
     df_cont['Lag_Discharge_3'] = df_cont['Discharge'].shift(3).bfill()
     
     # Select predictors (Section 3.2)
-    predictors = ['Log_Discharge', 'MA_Discharge_3', 'Lag_Discharge', 'Lag_Discharge_3', 'Rainfall', 'ETo']
+    predictors = ['Discharge', 'MA_Discharge_3', 'Lag_Discharge', 'Lag_Discharge_3', 'Rainfall', 'ETo', 'Annual_Rainfall', 'Cumulative_Rainfall']
     X_inter = df_inter[predictors]
     y_inter = df_inter['SSC']
     X_cont = df_cont[predictors]
@@ -164,7 +185,7 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
     
     # Create output DataFrame
     df_cont['SSC'] = ssc_pred
-    return df_cont[['Date', 'Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC']]
+    return df_cont[['Date', 'Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC', 'Annual_Rainfall', 'Cumulative_Rainfall']]
 
 def calculate_sediment_yield(df, watershed_name, area_km2, output_dir):
     """
@@ -189,7 +210,7 @@ def calculate_sediment_yield(df, watershed_name, area_km2, output_dir):
     df['Sediment_Yield'] = df['Discharge'] * df['SSC'] * LOAD_FACTOR / (area_km2 * 100)
     
     # Drop invalid data
-    df = df.dropna(subset=['Date', 'Rainfall', 'Discharge', 'SSC', 'Sediment_Yield'])
+    df = df.dropna(subset=['Date', 'Rainfall', 'Discharge', 'SSC', 'Sediment_Yield', 'Annual_Rainfall', 'Cumulative_Rainfall'])
     
     if df.empty:
         raise ValueError(f"{watershed_name} data empty after cleaning")
@@ -201,7 +222,7 @@ def calculate_sediment_yield(df, watershed_name, area_km2, output_dir):
     
     # Debug: Print sample
     print(f"\n{watershed_name} Daily Data Sample:")
-    print(df[['Date', 'Rainfall', 'Discharge', 'Sediment_Yield']].head())
+    print(df[['Date', 'Rainfall', 'Discharge', 'Sediment_Yield', 'Annual_Rainfall', 'Cumulative_Rainfall']].head())
     print(f"{watershed_name} Data Shape: {df.shape}")
     
     return df
@@ -252,89 +273,101 @@ def process_seasonal_data(df, watershed_name):
     
     return seasonal_data, df, stats
 
-def create_side_by_side_plot(data_dict, output_png, output_svg):
+def create_side_by_side_plot(data_dict, output_dir):
     """
     Generate Figure 9: Side-by-side seasonal sediment yield plot in t/ha/yr with IQR bands.
     Args:
         data_dict (dict): Dictionary with seasonal data and stats for each watershed.
-        output_png (Path): Path for PNG output.
-        output_svg (Path): Path for SVG output.
+        output_dir (Path): Directory for output plots.
     """
     print("\nGenerating Figure 9...")
     
     # Calculate dynamic y-axis limit
-    max_yield = max(data_dict[w]['seasonal_data']['Sediment_Yield_tons_ha_yr'].max() for w in data_dict)
+    max_yield = max(data_dict[w]['seasonal_data']['Sediment_Yield_tons_ha_yr'].max() for w in data_dict if w in data_dict)
     max_yield = max(max_yield * 1.1, 80)  # Ensure minimum 80 t/ha/yr
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6), sharey=True)
     fig.patch.set_facecolor('white')
     
     for ax, watershed_name in zip([ax1, ax2], ['Gilgel Abay', 'Gumara']):
-        seasonal_data = data_dict[watershed_name]['seasonal_data']
-        stats = data_dict[watershed_name]['stats']
-        
-        # Plot Dry Season (split)
-        dry_data = seasonal_data[seasonal_data['Season'] == 'Dry']
-        dry_before = dry_data[dry_data['Julian_Day'] < 152]
-        dry_after = dry_data[dry_data['Julian_Day'] > 304]
-        ax.plot(dry_before['Julian_Day'], dry_before['Sediment_Yield_tons_ha_yr'], color='#FF8C00', 
-                label='Dry Mean', linewidth=2)
-        ax.plot(dry_after['Julian_Day'], dry_after['Sediment_Yield_tons_ha_yr'], color='#FF8C00', 
-                linewidth=2)
-        
-        # Plot Wet Season
-        wet_data = seasonal_data[seasonal_data['Season'] == 'Wet']
-        ax.plot(wet_data['Julian_Day'], wet_data['Sediment_Yield_tons_ha_yr'], color='#1f77b4', 
-                label='Wet Mean', linewidth=2)
-        
-        # Add IQR bands
-        wet_stats = stats[stats['Season'] == 'Wet'].iloc[0] if 'Wet' in stats['Season'].values else None
-        dry_stats = stats[stats['Season'] == 'Dry'].iloc[0] if 'Dry' in stats['Season'].values else None
-        if wet_stats is not None:
-            ax.fill_between(wet_data['Julian_Day'], wet_stats['q25'], wet_stats['q75'], 
-                            color='#1f77b4', alpha=0.2, label='Wet IQR')
-        if dry_stats is not None:
-            ax.fill_between(dry_before['Julian_Day'], dry_stats['q25'], dry_stats['q75'], 
-                            color='#FF8C00', alpha=0.2, label='Dry IQR')
-            ax.fill_between(dry_after['Julian_Day'], dry_stats['q25'], dry_stats['q75'], 
-                            color='#FF8C00', alpha=0.2)
-        
-        # Add statistical annotations
-        if wet_stats is not None:
-            ax.text(0.02, 0.98, f"Wet: Mean={wet_stats['mean']:.2f}\nSD={wet_stats['std']:.2f}", 
-                    transform=ax.transAxes, fontsize=12, verticalalignment='top', 
-                    color='#1f77b4', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='#1f77b4'))
-        if dry_stats is not None:
-            ax.text(0.98, 0.98, f"Dry: Mean={dry_stats['mean']:.2f}\nSD={dry_stats['std']:.2f}", 
-                    transform=ax.transAxes, fontsize=12, verticalalignment='top', horizontalalignment='right', 
-                    color='#FF8C00', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='#FF8C00'))
-        
-        # Add legend
-        ax.legend(title='Season', fontsize=14, loc='center left', 
-                  bbox_to_anchor=(0.02, 0.5), frameon=True, edgecolor='black')
-        
-        # Set title and labels
-        ax.set_title(f"({'a' if watershed_name == 'Gilgel Abay' else 'b'}) {watershed_name}", fontsize=20)
-        ax.set_xlabel('Julian Day', fontsize=18)
-        if ax == ax1:
-            ax.set_ylabel('Mean Sediment Yield\n(t/ha/yr)', fontsize=18)
-        
-        # Configure axes
-        ax.set_ylim(0, max_yield)
-        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        ax.tick_params(axis='both', labelsize=14)
-        ax.grid(False)
-        
-        # Debug: Print axis limits
-        print(f"{watershed_name} Plot Axis Limits: 0 to {max_yield:.2f} t/ha/yr")
+        if watershed_name in data_dict:
+            seasonal_data = data_dict[watershed_name]['seasonal_data']
+            stats = data_dict[watershed_name]['stats']
+            
+            # Plot Dry Season (split)
+            dry_data = seasonal_data[seasonal_data['Season'] == 'Dry']
+            dry_before = dry_data[dry_data['Julian_Day'] < 152]
+            dry_after = dry_data[dry_data['Julian_Day'] > 304]
+            ax.plot(dry_before['Julian_Day'], dry_before['Sediment_Yield_tons_ha_yr'], color='#FF8C00', 
+                    label='Dry Mean', linewidth=2)
+            ax.plot(dry_after['Julian_Day'], dry_after['Sediment_Yield_tons_ha_yr'], color='#FF8C00', 
+                    linewidth=2)
+            
+            # Plot Wet Season
+            wet_data = seasonal_data[seasonal_data['Season'] == 'Wet']
+            ax.plot(wet_data['Julian_Day'], wet_data['Sediment_Yield_tons_ha_yr'], color='#1f77b4', 
+                    label='Wet Mean', linewidth=2)
+            
+            # Add IQR bands
+            wet_stats = stats[stats['Season'] == 'Wet'].iloc[0] if 'Wet' in stats['Season'].values else None
+            dry_stats = stats[stats['Season'] == 'Dry'].iloc[0] if 'Dry' in stats['Season'].values else None
+            if wet_stats is not None:
+                ax.fill_between(wet_data['Julian_Day'], wet_stats['q25'], wet_stats['q75'], 
+                                color='#1f77b4', alpha=0.2, label='Wet IQR')
+            if dry_stats is not None:
+                ax.fill_between(dry_before['Julian_Day'], dry_stats['q25'], dry_stats['q75'], 
+                                color='#FF8C00', alpha=0.2, label='Dry IQR')
+                ax.fill_between(dry_after['Julian_Day'], dry_stats['q25'], dry_stats['q75'], 
+                                color='#FF8C00', alpha=0.2)
+            
+            # Add statistical annotations
+            if wet_stats is not None:
+                ax.text(0.02, 0.98, f"Wet: Mean={wet_stats['mean']:.2f}\nSD={wet_stats['std']:.2f}", 
+                        transform=ax.transAxes, fontsize=12, verticalalignment='top', 
+                        color='#1f77b4', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='#1f77b4'))
+            if dry_stats is not None:
+                ax.text(0.98, 0.98, f"Dry: Mean={dry_stats['mean']:.2f}\nSD={dry_stats['std']:.2f}", 
+                        transform=ax.transAxes, fontsize=12, verticalalignment='top', horizontalalignment='right', 
+                        color='#FF8C00', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='#FF8C00'))
+            
+            # Add legend
+            ax.legend(title='Season', fontsize=14, loc='center left', 
+                      bbox_to_anchor=(0.02, 0.5), frameon=True, edgecolor='black')
+            
+            # Set title and labels
+            ax.set_title(f"({'a' if watershed_name == 'Gilgel Abay' else 'b'}) {watershed_name}", fontsize=20)
+            ax.set_xlabel('Julian Day', fontsize=18)
+            if ax == ax1:
+                ax.set_ylabel('Mean Sediment Yield\n(t/ha/yr)', fontsize=18)
+            
+            # Configure axes
+            ax.set_ylim(0, max_yield)
+            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+            ax.tick_params(axis='both', labelsize=14)
+            ax.grid(False)
+            
+            # Debug: Print axis limits
+            print(f"{watershed_name} Plot Axis Limits: 0 to {max_yield:.2f} t/ha/yr")
+        else:
+            ax.text(0.5, 0.5, 'Data Unavailable', fontsize=16, ha='center', va='center')
+            ax.set_title(f"({'a' if watershed_name == 'Gilgel Abay' else 'b'}) {watershed_name}", fontsize=20)
+            ax.set_xlabel('Julian Day', fontsize=18)
+            if ax == ax1:
+                ax.set_ylabel('Mean Sediment Yield\n(t/ha/yr)', fontsize=18)
+            ax.set_ylim(0, 80)
+            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+            ax.tick_params(axis='both', labelsize=14)
+            ax.grid(False)
     
     # Adjust layout
     plt.tight_layout()
     
     # Save plots
+    output_png = output_dir / 'Figure9_Seasonal_Sediment_Yield.png'
+    output_svg = output_dir / 'Figure9_Seasonal_Sediment_Yield.svg'
     plt.savefig(output_png, dpi=600, format='png', bbox_inches='tight')
     plt.savefig(output_svg, format='svg', bbox_inches='tight')
-    print(f"Figure 9 saved to {output_png} (PNG) and {output_svg} (SVG)")
+    plt.show()  # Display the plot in Jupyter notebook
     plt.close()
 
 def main():
@@ -381,15 +414,13 @@ def main():
             print(f"Error processing {watershed_name}: {str(e)}")
             continue
     
-    if len(data_dict) == 2:
+    if data_dict:
         try:
-            output_png = WATERSHED_CONFIG['Gilgel Abay']['output_dir'] / 'Figure9_Seasonal_Sediment_Yield.png'
-            output_svg = WATERSHED_CONFIG['Gilgel Abay']['output_dir'] / 'Figure9_Seasonal_Sediment_Yield.svg'
-            create_side_by_side_plot(data_dict, output_png, output_svg)
+            create_side_by_side_plot(data_dict, WATERSHED_CONFIG['Gilgel Abay']['output_dir'])
         except Exception as e:
             print(f"Error generating Figure 9: {str(e)}")
     else:
-        print("Error: Could not generate Figure 9 due to missing data for one or both watersheds")
+        print("Error: No data processed successfully. Figure 9 cannot be generated.")
 
 if __name__ == "__main__":
     main()
