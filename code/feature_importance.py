@@ -1,8 +1,8 @@
 # Script to generate Figure 6: Feature importance analysis for SSC prediction in Gilgel Abay and Gumara watersheds
 # using Quantile Random Forest (QRF). Computes importance scores for predictors (Discharge, MA_Discharge_3,
-# Lag_Discharge, Lag_Discharge_3, Rainfall, ETo, Temperature, Annual_Rainfall, Cumulative_Rainfall) based on
-# feature importance analysis (Section 3.2, Table 4). Produces a sorted feature importance CSV and bar plot
-# for publication.
+# Lag_Discharge_1, Lag_Discharge_3, Rainfall, ETo, Temperature, Annual_Rainfall, Cumulative_Rainfall,
+# Lag_Rainfall_7, Lag_Rainfall_14) based on feature importance analysis (Section 3.2, Table 4). Produces a
+# sorted feature importance CSV and bar plot.
 # Author: Kindie B. Worku
 # Date: 2025-07-16
 
@@ -15,7 +15,7 @@ import seaborn as sns
 from pathlib import Path
 import os
 
-# Ensure matplotlib displays in Jupyter
+# Ensure matplotlib displays
 %matplotlib inline
 print("Matplotlib inline enabled")
 
@@ -84,7 +84,8 @@ except Exception as e:
 
 def extract_feature_importance(intermittent_path, watershed_name, n_samples, qrf_params, is_excel=False):
     """
-    Load data, perform feature engineering with annual and cumulative rainfall, train QRF model, and compute feature importance scores.
+    Load data, perform enhanced feature engineering with annual/cumulative rainfall, Rainfall lags,
+    seasonal indices, and outlier handling, train QRF model, and compute feature importance scores.
     Args:
         intermittent_path (Path): Path to input data file (Excel or CSV).
         watershed_name (str): Name of the watershed ('Gilgel Abay' or 'Gumara').
@@ -180,21 +181,34 @@ def extract_feature_importance(intermittent_path, watershed_name, n_samples, qrf
         print(f"{watershed_name} data empty after processing")
         return None
 
-    # Feature engineering (Section 2.3)
-    print(f"Performing feature engineering for {watershed_name}...")
+    # Enhanced feature engineering (Section 2.3)
+    print(f"Performing enhanced feature engineering for {watershed_name}...")
     df_inter['MA_Discharge_3'] = df_inter['Discharge'].rolling(window=3, min_periods=1).mean().bfill()
     df_inter['Lag_Discharge_1'] = df_inter['Discharge'].shift(1).bfill()
     df_inter['Lag_Discharge_3'] = df_inter['Discharge'].shift(3).bfill()
+    # Add Rainfall lags
+    df_inter['Lag_Rainfall_7'] = df_inter['Rainfall'].shift(7).bfill()
+    df_inter['Lag_Rainfall_14'] = df_inter['Rainfall'].shift(14).bfill()
+    # Add seasonal indices
+    df_inter['Julian_Day'] = df_inter['Date'].dt.dayofyear
+    df_inter['Sin_Julian'] = np.sin(2 * np.pi * df_inter['Julian_Day'] / 365)
+    df_inter['Cos_Julian'] = np.cos(2 * np.pi * df_inter['Julian_Day'] / 365)
+    # Outlier handling using IQR
+    for col in ['Discharge', 'Rainfall', 'Temperature', 'ETo']:
+        Q1 = df_inter[col].quantile(0.25)
+        Q3 = df_inter[col].quantile(0.75)
+        IQR = Q3 - Q1
+        df_inter = df_inter[~((df_inter[col] < (Q1 - 1.5 * IQR)) | (df_inter[col] > (Q3 + 1.5 * IQR)))]
 
-    # Select predictors 
-    predictors = ['Discharge', 'MA_Discharge_3', 'Lag_Discharge_1', 'Lag_Discharge_3', 'Rainfall', 'ETo', 'Temperature', 'Annual_Rainfall', 'Cumulative_Rainfall']
+    # Select predictors
+    predictors = ['Discharge', 'MA_Discharge_3', 'Lag_Discharge_1', 'Lag_Discharge_3', 'Rainfall', 'ETo', 'Temperature', 'Annual_Rainfall', 'Cumulative_Rainfall', 'Lag_Rainfall_7', 'Lag_Rainfall_14', 'Sin_Julian', 'Cos_Julian']
     X_inter = df_inter[predictors]
     y_inter = df_inter['SSC']
     print(f"Predictors for {watershed_name}: {predictors}")
 
     # Compute and display feature correlations
     print(f"\nFeature correlations for {watershed_name}:\n{X_inter.corr()}\n")
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(12, 8))
     sns.heatmap(X_inter.corr(), annot=True, cmap='coolwarm', vmin=-1, vmax=1, center=0)
     plt.title(f'Correlation Matrix - {watershed_name}', fontsize=20)
     plt.tight_layout()
@@ -253,7 +267,7 @@ print("Feature Importances Dictionary:", feature_importances)
 # Generate combined feature importance table and plot
 if len(feature_importances) >= 1:
     print("\nGenerating combined feature importance plot...")
-    predictors = ['Discharge', 'MA_Discharge_3', 'Lag_Discharge_1', 'Lag_Discharge_3', 'Rainfall', 'ETo', 'Temperature', 'Annual_Rainfall', 'Cumulative_Rainfall']
+    predictors = ['Discharge', 'MA_Discharge_3', 'Lag_Discharge_1', 'Lag_Discharge_3', 'Rainfall', 'ETo', 'Temperature', 'Annual_Rainfall', 'Cumulative_Rainfall', 'Lag_Rainfall_7', 'Lag_Rainfall_14', 'Sin_Julian', 'Cos_Julian']
     data = {
         'Feature': predictors,
         'Gilgel Abay': [feature_importances.get('Gilgel Abay', {}).get(f, 0) for f in predictors],
@@ -281,7 +295,7 @@ if len(feature_importances) >= 1:
     print(f"\nDebug: Melted DataFrame for Plotting:\n{df_melted}")
 
     # Generate bar plot for feature importance (Figure 6)
-    plt.figure(figsize=(10, 6))  # Increased width for more predictors
+    plt.figure(figsize=(12, 6))  # Increased width for more predictors
     sns_plot = sns.barplot(data=df_melted, x='Feature', y='Importance', hue='Watershed',
                            order=sorted_predictors,
                            palette={'Gilgel Abay': '#1f77b4', 'Gumara': '#2ca02c'})
