@@ -5,12 +5,14 @@
 # plots of mean sediment yield by Julian Day with IQR bands based on predicted quantiles.
 # Outputs include Excel for daily data, CSV for seasonal data, and publication-quality PNG/SVG plots.
 # Author: Kindie B. Worku
-# Date: 2025-07-16 
+# Date: 2025-07-16
 
 import pandas as pd
 import numpy as np
 from quantile_forest import RandomForestQuantileRegressor
 from sklearn.preprocessing import RobustScaler
+import matplotlib
+matplotlib.use('TkAgg')  # Use TkAgg backend for Jupyter (ensure Tkinter is installed)
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
@@ -25,6 +27,15 @@ warnings.filterwarnings('ignore')
 sns.set_style('white')
 plt.rcParams['font.family'] = 'Times New Roman'
 plt.rcParams['font.size'] = 16
+
+print(f"Matplotlib version: {matplotlib.__version__}")  # Debug: Check matplotlib version
+print(f"Matplotlib backend: {plt.get_backend()}")  # Debug: Check active backend
+
+# Test plot to verify display (should show a simple line if display works)
+plt.figure()
+plt.plot([1, 2, 3], [4, 5, 6])
+plt.title("Test Plot")
+plt.show()  # Test display before main plot
 
 # Define constants
 WATERSHED_CONFIG = {
@@ -70,7 +81,7 @@ LOAD_FACTOR = 86.4  # Converts m³/s × g/L to t/day (86,400 s/day × 10⁻⁶ t
 def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, is_excel_inter=False):
     """
     Predict daily SSC (g/L) for 1990–2020 using QRF trained on intermittent data with uncertainty quantiles.
-    Enhanced with robust column mapping and error logging to handle missing or misnamed columns.
+    Enhanced with robust column mapping, lagged rainfall predictors, and feature importance logging.
     Args:
         intermittent_path (Path): Path to intermittent data (Excel or CSV).
         continuous_path (Path): Path to continuous data (Excel or CSV).
@@ -80,7 +91,7 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
     Returns:
         DataFrame with continuous data and predicted SSC with quantiles, or None if data is invalid.
     """
-    print(f"Predicting SSC for {watershed_name}...")
+    print(f"\nPredicting SSC for {watershed_name}...")
     
     # Check file existence
     if not intermittent_path.exists():
@@ -153,41 +164,60 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
         print(f"Error: {watershed_name} data empty after date cleaning")
         return None
     
-    # Ensure numeric columns with type conversion
+    # Ensure numeric columns with type conversion and clip negative values
     numeric_cols = ['Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC']
     for col in numeric_cols:
         if col in df_inter:
             df_inter[col] = pd.to_numeric(df_inter[col], errors='coerce')
+            if (df_inter[col] < 0).any():
+                print(f"Warning: Negative values in {watershed_name} intermittent {col}, clipping to 0")
+                df_inter[col] = df_inter[col].clip(lower=0)
     for col in numeric_cols[:-1]:
         df_cont[col] = pd.to_numeric(df_cont[col], errors='coerce')
+        if (df_cont[col] < 0).any():
+            print(f"Warning: Negative values in {watershed_name} continuous {col}, clipping to 0")
+            df_cont[col] = df_cont[col].clip(lower=0)
     
     # Drop rows with missing numeric values
     df_inter = df_inter.dropna(subset=numeric_cols)
     df_cont = df_cont.dropna(subset=numeric_cols[:-1])
+    print(f"{watershed_name} Intermittent Data after cleaning: {len(df_inter)} rows")
+    print(f"{watershed_name} Continuous Data after cleaning: {len(df_cont)} rows")
     if df_inter.empty:
         print(f"Error: {watershed_name} intermittent data empty after cleaning")
         return None
     
-    # Feature engineering with annual and cumulative rainfall
+    # Check data coverage for rainfall
     df_inter['Year'] = df_inter['Date'].dt.year
+    days_per_year = df_inter.groupby('Year')['Rainfall'].count()
+    sparse_years = days_per_year[days_per_year < 365 * 0.8].index
+    if not sparse_years.empty:
+        print(f"Warning: Sparse rainfall data in {watershed_name} for years {list(sparse_years)} (< 80% of days)")
+    
+    # Feature engineering: Annual and cumulative rainfall, lagged rainfall, and discharge features
+    df_inter = df_inter.sort_values('Date')
     df_cont['Year'] = df_cont['Date'].dt.year
+    df_cont = df_cont.sort_values('Date')
     
     # Compute Annual Rainfall
     annual_rainfall_inter = df_inter.groupby('Year')['Rainfall'].sum().reset_index()
     annual_rainfall_inter.columns = ['Year', 'Annual_Rainfall']
     df_inter = df_inter.merge(annual_rainfall_inter, on='Year', how='left')
-    
-    df_inter = df_inter.sort_values('Date')
-    df_inter['Cumulative_Rainfall'] = df_inter['Rainfall'].cumsum()
-    
     annual_rainfall_cont = df_cont.groupby('Year')['Rainfall'].sum().reset_index()
     annual_rainfall_cont.columns = ['Year', 'Annual_Rainfall']
     df_cont = df_cont.merge(annual_rainfall_cont, on='Year', how='left')
     
-    df_cont = df_cont.sort_values('Date')
-    df_cont['Cumulative_Rainfall'] = df_cont['Rainfall'].cumsum()
+    # Check for missing annual rainfall
+    if df_inter['Annual_Rainfall'].isna().any():
+        print(f"Warning: Missing Annual_Rainfall for some days in {watershed_name} intermittent data")
+    if df_cont['Annual_Rainfall'].isna().any():
+        print(f"Warning: Missing Annual_Rainfall for some days in {watershed_name} continuous data")
     
-    # Feature engineering: rolling means and lags
+    # Compute Cumulative Rainfall
+    df_inter['Cumulative_Rainfall'] = df_inter.groupby('Year')['Rainfall'].cumsum()
+    df_cont['Cumulative_Rainfall'] = df_cont.groupby('Year')['Rainfall'].cumsum()
+    
+    # Feature engineering: Rolling means and lags for discharge
     df_inter['MA_Discharge_3'] = df_inter['Discharge'].rolling(window=3, min_periods=1).mean().bfill()
     df_inter['Lag_Discharge'] = df_inter['Discharge'].shift(1).bfill()
     df_inter['Lag_Discharge_3'] = df_inter['Discharge'].shift(3).bfill()
@@ -195,8 +225,25 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
     df_cont['Lag_Discharge'] = df_cont['Discharge'].shift(1).bfill()
     df_cont['Lag_Discharge_3'] = df_cont['Discharge'].shift(3).bfill()
     
-    # Select predictors
-    predictors = ['Discharge', 'MA_Discharge_3', 'Lag_Discharge', 'Lag_Discharge_3', 'Rainfall', 'ETo', 'Annual_Rainfall', 'Cumulative_Rainfall']
+    # Feature engineering: Lagged rainfall (7 and 14 days)
+    df_inter['Lag_Rainfall_7'] = df_inter['Rainfall'].shift(7).bfill()
+    df_inter['Lag_Rainfall_14'] = df_inter['Rainfall'].shift(14).bfill()
+    df_cont['Lag_Rainfall_7'] = df_cont['Rainfall'].shift(7).bfill()
+    df_cont['Lag_Rainfall_14'] = df_cont['Rainfall'].shift(14).bfill()
+    
+    # Select predictors (Section 3.2, including lagged rainfall)
+    predictors = ['Discharge', 'MA_Discharge_3', 'Lag_Discharge', 'Lag_Discharge_3', 'Rainfall', 'ETo', 
+                  'Annual_Rainfall', 'Cumulative_Rainfall', 'Lag_Rainfall_7', 'Lag_Rainfall_14']
+    print(f"{watershed_name} Predictors: {predictors}")
+    
+    # Check for NaN or infinite values in predictors
+    for df, df_name in [(df_inter, 'intermittent'), (df_cont, 'continuous')]:
+        for col in predictors:
+            if col in df and (df[col].isna().any() or np.isinf(df[col]).any()):
+                print(f"Warning: {watershed_name} {df_name} data has NaN or infinite values in {col}, filling with 0")
+                df[col] = df[col].fillna(0)
+                df[col] = df[col].replace([np.inf, -np.inf], 0)
+    
     X_inter = df_inter[predictors]
     y_inter = df_inter['SSC']
     X_cont = df_cont[predictors]
@@ -211,14 +258,21 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
         qrf = RandomForestQuantileRegressor(**qrf_params)
         qrf.fit(X_inter_scaled, y_inter)
         ssc_pred = qrf.predict(X_cont_scaled, quantiles=[0.25, 0.5, 0.75])
+        print(f"{watershed_name} SSC Prediction Summary (g/L):")
+        for q, preds in zip([0.25, 0.5, 0.75], ssc_pred.T):
+            print(f"Quantile {q}: {pd.Series(preds).describe()}")
+        
+        # Log feature importance
+        feature_importance = pd.DataFrame({
+            'Feature': predictors,
+            'Importance': qrf.feature_importances_
+        }).sort_values(by='Importance', ascending=False)
+        print(f"{watershed_name} Feature Importance:")
+        print(feature_importance)
+    
     except Exception as e:
         print(f"Error training/predicting QRF for {watershed_name}: {str(e)}")
         return None
-    
-    # Debug: SSC prediction summary
-    print(f"{watershed_name} SSC Prediction Summary (g/L):")
-    for q, preds in zip([0.25, 0.5, 0.75], ssc_pred.T):
-        print(f"Quantile {q}: {pd.Series(preds).describe()}")
     
     # Create output DataFrame with SSC quantiles
     df_cont['SSC_Q25'] = ssc_pred[:, 0]  # 0.25 quantile
@@ -237,7 +291,7 @@ def calculate_sediment_yield(df, watershed_name, area_km2, output_dir):
     Returns:
         DataFrame with daily sediment yield and uncertainty, or None if data is invalid.
     """
-    print(f"Calculating sediment yield for {watershed_name}...")
+    print(f"\nCalculating sediment yield for {watershed_name}...")
     
     # Create output directory
     output_dir.mkdir(exist_ok=True)
@@ -278,9 +332,9 @@ def process_seasonal_data(df, watershed_name):
         df (DataFrame): DataFrame with daily data (Date, Rainfall, Discharge, Sediment_Yield_Median, Sediment_Yield_Q25, Sediment_Yield_Q75).
         watershed_name (str): Name of the watershed.
     Returns:
-        DataFrame with seasonal data by Julian Day and uncertainty, or None if data is invalid.
+        DataFrame with seasonal data by Julian Day, daily data, and seasonal stats, or None if data is invalid.
     """
-    print(f"Processing seasonal data for {watershed_name}...")
+    print(f"\nProcessing seasonal data for {watershed_name}...")
     
     # Filter for 1990–2020
     df = df[(df['Date'].dt.year >= 1990) & (df['Date'].dt.year <= 2020)]
@@ -342,6 +396,9 @@ def create_side_by_side_plot(data_dict, output_dir):
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6), sharey=True)
     fig.patch.set_facecolor('white')
     
+    all_lines = []
+    all_labels = []
+    
     for ax, watershed_name in zip([ax1, ax2], ['Gilgel Abay', 'Gumara']):
         if watershed_name in data_dict:
             seasonal_data = data_dict[watershed_name]['seasonal_data']
@@ -351,15 +408,15 @@ def create_side_by_side_plot(data_dict, output_dir):
             dry_data = seasonal_data[seasonal_data['Season'] == 'Dry']
             dry_before = dry_data[dry_data['Julian_Day'] < 152]
             dry_after = dry_data[dry_data['Julian_Day'] > 304]
-            ax.plot(dry_before['Julian_Day'], dry_before['Sediment_Yield_Median_tons_ha_yr'], color='#FF8C00', 
-                    label='Dry Mean', linewidth=2)
+            line_dry = ax.plot(dry_before['Julian_Day'], dry_before['Sediment_Yield_Median_tons_ha_yr'], color='#FF8C00', 
+                              label='Dry Mean', linewidth=2)[0]
             ax.plot(dry_after['Julian_Day'], dry_after['Sediment_Yield_Median_tons_ha_yr'], color='#FF8C00', 
                     linewidth=2)
             
             # Plot Wet Season
             wet_data = seasonal_data[seasonal_data['Season'] == 'Wet']
-            ax.plot(wet_data['Julian_Day'], wet_data['Sediment_Yield_Median_tons_ha_yr'], color='#1f77b4', 
-                    label='Wet Mean', linewidth=2)
+            line_wet = ax.plot(wet_data['Julian_Day'], wet_data['Sediment_Yield_Median_tons_ha_yr'], color='#1f77b4', 
+                              label='Wet Mean', linewidth=2)[0]
             
             # Add IQR bands based on predicted quantiles
             ax.fill_between(wet_data['Julian_Day'], wet_data['Sediment_Yield_Q25_tons_ha_yr'], wet_data['Sediment_Yield_Q75_tons_ha_yr'],
@@ -381,9 +438,10 @@ def create_side_by_side_plot(data_dict, output_dir):
                         transform=ax.transAxes, fontsize=12, verticalalignment='top', horizontalalignment='right',
                         color='#FF8C00', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='#FF8C00'))
             
-            # Add legend
-            ax.legend(title='Season', fontsize=14, loc='center left',
-                      bbox_to_anchor=(0.02, 0.5), frameon=True, edgecolor='black')
+            # Collect lines for legend
+            if watershed_name == 'Gilgel Abay':
+                all_lines.extend([line_wet, line_dry])
+                all_labels.extend(['Wet Mean', 'Dry Mean'])
             
             # Set title and labels
             ax.set_title(f"({'a' if watershed_name == 'Gilgel Abay' else 'b'}) {watershed_name}", fontsize=20)
@@ -394,7 +452,7 @@ def create_side_by_side_plot(data_dict, output_dir):
             # Configure axes
             ax.set_ylim(0, max_yield)
             ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-            ax.tick_params(axis='both', labelsize=14)
+            ax.tick_params(axis='both', labelsize=14, colors='black')
             ax.grid(False)
             
             # Debug: Print axis limits
@@ -410,8 +468,11 @@ def create_side_by_side_plot(data_dict, output_dir):
             ax.tick_params(axis='both', labelsize=14)
             ax.grid(False)
     
+    # Add legend
+    fig.legend(all_lines, all_labels, loc='lower center', bbox_to_anchor=(0.5, -0.04), ncol=2, fontsize=16)
+    
     # Adjust layout
-    plt.tight_layout()
+    plt.tight_layout(pad=2.0)
     
     # Save plots
     output_png = output_dir / 'Figure9_Seasonal_Sediment_Yield.png'
@@ -419,7 +480,7 @@ def create_side_by_side_plot(data_dict, output_dir):
     plt.savefig(output_png, dpi=600, format='png', bbox_inches='tight')
     plt.savefig(output_svg, format='svg', bbox_inches='tight')
     print(f"Plots saved to {output_png} (PNG) and {output_svg} (SVG)")
-    plt.show()  # Display the plot
+    plt.show()  # Display the plot in Jupyter notebook
     plt.close()
 
 def main():
