@@ -1,11 +1,11 @@
 # Script to generate Figure 9: Seasonal sediment yield for Gilgel Abay and Gumara watersheds (Section 3.4).
 # Predicts daily SSC (g/L) for 1990–2020 using Quantile Random Forest (QRF) trained on intermittent data,
-# calculates daily sediment yield (t/ha/day) with uncertainty quantiles,
+# calculates daily sediment yield (t/ha/day) with uncertainty quantiles (0.25, 0.5, 0.75),
 # aggregates to seasonal means (Wet: June 1–Oct 31, Dry: Nov 1–May 31) in t/ha/yr, and produces side-by-side
 # plots of mean sediment yield by Julian Day with IQR bands based on predicted quantiles.
 # Outputs include Excel for daily data, CSV for seasonal data, and publication-quality PNG/SVG plots.
 # Author: Kindie B. Worku
-# Date: 2025-07-16
+# Date: 2025-07-16 
 
 import pandas as pd
 import numpy as np
@@ -16,6 +16,7 @@ import seaborn as sns
 from pathlib import Path
 from matplotlib.ticker import MaxNLocator
 import warnings
+import os
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
@@ -69,6 +70,7 @@ LOAD_FACTOR = 86.4  # Converts m³/s × g/L to t/day (86,400 s/day × 10⁻⁶ t
 def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, is_excel_inter=False):
     """
     Predict daily SSC (g/L) for 1990–2020 using QRF trained on intermittent data with uncertainty quantiles.
+    Enhanced with robust column mapping and error logging to handle missing or misnamed columns.
     Args:
         intermittent_path (Path): Path to intermittent data (Excel or CSV).
         continuous_path (Path): Path to continuous data (Excel or CSV).
@@ -76,46 +78,82 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
         qrf_params (dict): QRF hyperparameters.
         is_excel_inter (bool): Flag to indicate if intermittent file is Excel (True) or CSV (False).
     Returns:
-        DataFrame with continuous data and predicted SSC with quantiles.
+        DataFrame with continuous data and predicted SSC with quantiles, or None if data is invalid.
     """
     print(f"Predicting SSC for {watershed_name}...")
     
     # Check file existence
     if not intermittent_path.exists():
-        raise FileNotFoundError(f"Intermittent file not found: {intermittent_path}")
+        print(f"Error: Intermittent file not found: {intermittent_path}")
+        print(f"Available files: {os.listdir(intermittent_path.parent)}")
+        return None
     if not continuous_path.exists():
-        raise FileNotFoundError(f"Continuous file not found: {continuous_path}")
+        print(f"Error: Continuous file not found: {continuous_path}")
+        print(f"Available files: {os.listdir(continuous_path.parent)}")
+        return None
     
-    # Load data
+    # Load data with error handling
     try:
         if is_excel_inter:
             df_inter = pd.read_excel(intermittent_path, engine='openpyxl')
         else:
             df_inter = pd.read_csv(intermittent_path)
+        
         df_cont = pd.read_csv(continuous_path) if continuous_path.suffix == '.csv' else pd.read_excel(continuous_path, engine='openpyxl')
+        
         print(f"{watershed_name} Intermittent Data Shape: {df_inter.shape}")
+        print(f"{watershed_name} Intermittent Columns: {list(df_inter.columns)}")
         print(f"{watershed_name} Continuous Data Shape: {df_cont.shape}")
+        print(f"{watershed_name} Continuous Columns: {list(df_cont.columns)}")
     except Exception as e:
-        raise ValueError(f"Error loading data for {watershed_name}: {str(e)}")
+        print(f"Error loading data for {watershed_name}: {str(e)}")
+        return None
     
-    # Validate columns
+    # Enhanced column mapping with comprehensive alternatives
+    column_mapping = {
+        'Date': ['Date', 'date', 'Time', 'time', 'Timestamp', 'timestamp'],
+        'Rainfall': ['Rainfall', 'rainfall', 'Rain', 'rain', 'Precipitation', 'precip', 'P', 'p'],
+        'Discharge': ['Discharge', 'discharge', 'Flow', 'flow', 'Q', 'q', 'Runoff', 'runoff'],
+        'Temperature': ['Temperature', 'temperature', 'Temp', 'temp', 'T', 't', 'AirTemp', 'airtemp'],
+        'ETo': ['ETo', 'eto', 'ET0', 'Evapotranspiration', 'evapotranspiration', 'ET', 'et', 'PotentialET', 'potentialet'],
+        'SSC': ['SSC', 'ssc', 'SuspendedSediment', 'suspended_sediment', 'Sediment', 'sediment']
+    }
+    
+    # Rename columns if necessary
+    for df, df_name in [(df_inter, 'intermittent'), (df_cont, 'continuous')]:
+        for expected_col, alternatives in column_mapping.items():
+            found = False
+            for alt in alternatives:
+                if alt in df.columns:
+                    df.rename(columns={alt: expected_col}, inplace=True)
+                    print(f"Renamed {alt} to {expected_col} in {watershed_name} {df_name} data")
+                    found = True
+                    break
+            if not found and expected_col != 'Date' and not (df_name == 'continuous' and expected_col == 'SSC'):
+                print(f"Warning: {expected_col} not found in {watershed_name} {df_name} data. Available columns: {list(df.columns)}")
+    
+    # Validate required columns with detailed logging
     required_cols_inter = ['Date', 'Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC']
     required_cols_cont = ['Date', 'Rainfall', 'Discharge', 'Temperature', 'ETo']
-    if not all(col in df_inter.columns for col in required_cols_inter):
-        raise ValueError(f"{watershed_name} intermittent data missing columns: {required_cols_inter}")
-    if not all(col in df_cont.columns for col in required_cols_cont):
-        raise ValueError(f"{watershed_name} continuous data missing columns: {required_cols_cont}")
+    missing_inter = [col for col in required_cols_inter if col not in df_inter.columns]
+    missing_cont = [col for col in required_cols_cont if col not in df_cont.columns]
+    if missing_inter:
+        print(f"Warning: {watershed_name} intermittent data missing: {missing_inter}")
+        return None
+    if missing_cont:
+        print(f"Warning: {watershed_name} continuous data missing: {missing_cont}")
+        return None
     
-    # Convert dates to datetime
+    # Convert dates to datetime with error handling
     df_inter['Date'] = pd.to_datetime(df_inter['Date'], errors='coerce')
     df_cont['Date'] = pd.to_datetime(df_cont['Date'], errors='coerce')
     df_inter = df_inter.dropna(subset=['Date'])
     df_cont = df_cont.dropna(subset=['Date'])
-    
     if df_inter.empty or df_cont.empty:
-        raise ValueError(f"{watershed_name} data empty after date cleaning")
+        print(f"Error: {watershed_name} data empty after date cleaning")
+        return None
     
-    # Ensure numeric columns
+    # Ensure numeric columns with type conversion
     numeric_cols = ['Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC']
     for col in numeric_cols:
         if col in df_inter:
@@ -123,36 +161,33 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
     for col in numeric_cols[:-1]:
         df_cont[col] = pd.to_numeric(df_cont[col], errors='coerce')
     
-    # Drop missing values
+    # Drop rows with missing numeric values
     df_inter = df_inter.dropna(subset=numeric_cols)
     df_cont = df_cont.dropna(subset=numeric_cols[:-1])
-    
     if df_inter.empty:
-        raise ValueError(f"{watershed_name} intermittent data empty after cleaning")
+        print(f"Error: {watershed_name} intermittent data empty after cleaning")
+        return None
     
-    # Feature engineering (Section 2.3) with annual and cumulative rainfall
+    # Feature engineering with annual and cumulative rainfall
     df_inter['Year'] = df_inter['Date'].dt.year
     df_cont['Year'] = df_cont['Date'].dt.year
     
-    # Compute Annual Rainfall for intermittent data
+    # Compute Annual Rainfall
     annual_rainfall_inter = df_inter.groupby('Year')['Rainfall'].sum().reset_index()
     annual_rainfall_inter.columns = ['Year', 'Annual_Rainfall']
     df_inter = df_inter.merge(annual_rainfall_inter, on='Year', how='left')
     
-    # Compute Cumulative Rainfall for intermittent data
     df_inter = df_inter.sort_values('Date')
     df_inter['Cumulative_Rainfall'] = df_inter['Rainfall'].cumsum()
     
-    # Compute Annual Rainfall for continuous data
     annual_rainfall_cont = df_cont.groupby('Year')['Rainfall'].sum().reset_index()
     annual_rainfall_cont.columns = ['Year', 'Annual_Rainfall']
     df_cont = df_cont.merge(annual_rainfall_cont, on='Year', how='left')
     
-    # Compute Cumulative Rainfall for continuous data
     df_cont = df_cont.sort_values('Date')
     df_cont['Cumulative_Rainfall'] = df_cont['Rainfall'].cumsum()
     
-    # Feature engineering (rolling means and lags)
+    # Feature engineering: rolling means and lags
     df_inter['MA_Discharge_3'] = df_inter['Discharge'].rolling(window=3, min_periods=1).mean().bfill()
     df_inter['Lag_Discharge'] = df_inter['Discharge'].shift(1).bfill()
     df_inter['Lag_Discharge_3'] = df_inter['Discharge'].shift(3).bfill()
@@ -160,7 +195,7 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
     df_cont['Lag_Discharge'] = df_cont['Discharge'].shift(1).bfill()
     df_cont['Lag_Discharge_3'] = df_cont['Discharge'].shift(3).bfill()
     
-    # Select predictors (Section 3.2)
+    # Select predictors
     predictors = ['Discharge', 'MA_Discharge_3', 'Lag_Discharge', 'Lag_Discharge_3', 'Rainfall', 'ETo', 'Annual_Rainfall', 'Cumulative_Rainfall']
     X_inter = df_inter[predictors]
     y_inter = df_inter['SSC']
@@ -175,9 +210,10 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
     try:
         qrf = RandomForestQuantileRegressor(**qrf_params)
         qrf.fit(X_inter_scaled, y_inter)
-        ssc_pred = qrf.predict(X_cont_scaled, quantiles=[0.25, 0.5, 0.75])  # Added quantiles for IQR
+        ssc_pred = qrf.predict(X_cont_scaled, quantiles=[0.25, 0.5, 0.75])
     except Exception as e:
-        raise ValueError(f"Error training/predicting QRF for {watershed_name}: {str(e)}")
+        print(f"Error training/predicting QRF for {watershed_name}: {str(e)}")
+        return None
     
     # Debug: SSC prediction summary
     print(f"{watershed_name} SSC Prediction Summary (g/L):")
@@ -199,7 +235,7 @@ def calculate_sediment_yield(df, watershed_name, area_km2, output_dir):
         area_km2 (float): Watershed area in km².
         output_dir (Path): Directory for output files.
     Returns:
-        DataFrame with daily sediment yield and uncertainty.
+        DataFrame with daily sediment yield and uncertainty, or None if data is invalid.
     """
     print(f"Calculating sediment yield for {watershed_name}...")
     
@@ -208,6 +244,9 @@ def calculate_sediment_yield(df, watershed_name, area_km2, output_dir):
     
     # Filter for 1990–2020
     df = df[(df['Date'].dt.year >= 1990) & (df['Date'].dt.year <= 2020)]
+    if df.empty:
+        print(f"Error: {watershed_name} data empty after 1990–2020 filter")
+        return None
     
     # Calculate sediment yield (t/ha/day) and uncertainty
     df['Sediment_Yield_Median'] = df['Discharge'] * df['SSC_Median'] * LOAD_FACTOR / (area_km2 * 100)
@@ -216,9 +255,9 @@ def calculate_sediment_yield(df, watershed_name, area_km2, output_dir):
     
     # Drop invalid data
     df = df.dropna(subset=['Date', 'Rainfall', 'Discharge', 'Sediment_Yield_Median', 'Sediment_Yield_Q25', 'Sediment_Yield_Q75', 'Annual_Rainfall', 'Cumulative_Rainfall'])
-    
     if df.empty:
-        raise ValueError(f"{watershed_name} data empty after cleaning")
+        print(f"Error: {watershed_name} data empty after dropping NaNs")
+        return None
     
     # Save to Excel
     output_path = output_dir / f"{watershed_name.replace(' ', '_')}_Daily_SSC_Sediment_Yield.xlsx"
@@ -226,7 +265,7 @@ def calculate_sediment_yield(df, watershed_name, area_km2, output_dir):
     print(f"Daily data saved to {output_path}")
     
     # Debug: Print sample
-    print(f"\n{watershed_name} Daily Data Sample:")
+    print(f"{watershed_name} Daily Data Sample:")
     print(df[['Date', 'Rainfall', 'Discharge', 'Sediment_Yield_Median', 'Sediment_Yield_Q25', 'Sediment_Yield_Q75']].head())
     print(f"{watershed_name} Data Shape: {df.shape}")
     
@@ -239,16 +278,17 @@ def process_seasonal_data(df, watershed_name):
         df (DataFrame): DataFrame with daily data (Date, Rainfall, Discharge, Sediment_Yield_Median, Sediment_Yield_Q25, Sediment_Yield_Q75).
         watershed_name (str): Name of the watershed.
     Returns:
-        DataFrame with seasonal data by Julian Day and uncertainty.
+        DataFrame with seasonal data by Julian Day and uncertainty, or None if data is invalid.
     """
-    print(f"\nProcessing seasonal data for {watershed_name}...")
+    print(f"Processing seasonal data for {watershed_name}...")
     
     # Filter for 1990–2020
     df = df[(df['Date'].dt.year >= 1990) & (df['Date'].dt.year <= 2020)]
     if df.empty:
-        raise ValueError(f"{watershed_name} data empty after year filtering (1990-2020)")
+        print(f"Error: {watershed_name} data empty after 1990–2020 filter")
+        return None, None, None
     
-    # Assign season
+    # Assign season and Julian Day
     df['Julian_Day'] = df['Date'].dt.dayofyear
     df['Season'] = df['Julian_Day'].apply(lambda x: 'Wet' if 152 <= x <= 304 else 'Dry')  # Wet: June 1–Oct 31, Dry: Nov 1–May 31
     
@@ -259,8 +299,11 @@ def process_seasonal_data(df, watershed_name):
     
     # Aggregate by Julian Day and Season
     seasonal_data = df.groupby(['Julian_Day', 'Season'])[['Sediment_Yield_Median_tons_ha_yr', 'Sediment_Yield_Q25_tons_ha_yr', 'Sediment_Yield_Q75_tons_ha_yr']].mean().reset_index()
+    if seasonal_data.empty:
+        print(f"Error: {watershed_name} seasonal data empty after aggregation")
+        return None, None, None
     
-    # Calculate seasonal statistics (already included in quantile propagation)
+    # Calculate seasonal statistics
     stats = df.groupby('Season')[['Sediment_Yield_Median_tons_ha_yr', 'Sediment_Yield_Q25_tons_ha_yr', 'Sediment_Yield_Q75_tons_ha_yr']].agg({
         'Sediment_Yield_Median_tons_ha_yr': 'mean',
         'Sediment_Yield_Q25_tons_ha_yr': 'mean',
@@ -291,8 +334,10 @@ def create_side_by_side_plot(data_dict, output_dir):
     print("\nGenerating Figure 9...")
     
     # Calculate dynamic y-axis limit
-    max_yield = max(data_dict[w]['seasonal_data']['Sediment_Yield_Median_tons_ha_yr'].max() for w in data_dict if w in data_dict)
-    max_yield = max(max_yield * 1.1, 80)  # Ensure minimum 80 t/ha/yr
+    max_yield = 80  # Default minimum
+    for watershed_name in data_dict:
+        max_yield = max(max_yield, data_dict[watershed_name]['seasonal_data']['Sediment_Yield_Median_tons_ha_yr'].max() * 1.1)
+    max_yield = max(max_yield, 80)  # Ensure minimum 80 t/ha/yr
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6), sharey=True)
     fig.patch.set_facecolor('white')
@@ -373,12 +418,14 @@ def create_side_by_side_plot(data_dict, output_dir):
     output_svg = output_dir / 'Figure9_Seasonal_Sediment_Yield.svg'
     plt.savefig(output_png, dpi=600, format='png', bbox_inches='tight')
     plt.savefig(output_svg, format='svg', bbox_inches='tight')
-    plt.show()  # Display the plot in Jupyter notebook
+    print(f"Plots saved to {output_png} (PNG) and {output_svg} (SVG)")
+    plt.show()  # Display the plot
     plt.close()
 
 def main():
     """
     Main function to process data and generate Figure 9.
+    Handles errors gracefully and continues with available data.
     """
     print("Starting script execution...")
     data_dict = {}
@@ -393,6 +440,9 @@ def main():
                 QRF_PARAMS[watershed_name],
                 is_excel_inter=(watershed_name == 'Gilgel Abay')
             )
+            if df_cont is None:
+                print(f"Skipping {watershed_name} due to data issues")
+                continue
             
             # Calculate daily sediment yield
             daily_data = calculate_sediment_yield(
@@ -401,9 +451,15 @@ def main():
                 params['area_km2'],
                 params['output_dir']
             )
+            if daily_data is None:
+                print(f"Skipping {watershed_name} due to sediment yield calculation issues")
+                continue
             
             # Process seasonal data
             seasonal_data, df, stats = process_seasonal_data(daily_data, watershed_name)
+            if seasonal_data is None or stats is None:
+                print(f"Skipping {watershed_name} due to seasonal data processing issues")
+                continue
             
             # Store data
             data_dict[watershed_name] = {
