@@ -2,8 +2,8 @@
 # Compares Segmented Rating Curve (SRC), Gradient Boosting (GB), Random Forest (RF), and Quantile Random Forest (QRF)
 # models for SSC prediction in Gilgel Abay and Gumara watersheds, producing scatter plots of observed vs. predicted SSC
 # (Section 3.1 of the research paper). Uses engineered predictors (Discharge, MA_Discharge_3, Lag_Discharge_1,
-# Lag_Discharge_3, Rainfall, ETo, Temperature, Annual_Rainfall, Cumulative_Rainfall) based on feature importance
-# (Section 3.2). Outputs are saved in PNG and SVG formats for publication.
+# Lag_Discharge_3, Rainfall, ETo, Temperature, Annual_Rainfall, Cumulative_Rainfall, Lag_Rainfall_7, Lag_Rainfall_14)
+# based on feature importance (Section 3.2). Outputs are saved in PNG and SVG formats.
 # Author: Kindie B. Worku
 # Date: 2025-07-16
 
@@ -16,7 +16,6 @@ from quantile_forest import RandomForestQuantileRegressor
 from sklearn.model_selection import train_test_split, RandomizedSearchCV, KFold
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
-from sklearn.preprocessing import StandardScaler
 from pathlib import Path
 import warnings
 
@@ -36,8 +35,8 @@ def mean_absolute_percentage_error(y_true, y_pred):
 # Define function to process and evaluate models for a given watershed
 def process_watershed(data_path, watershed_name, n_samples, is_excel=False):
     """
-    Process watershed data, perform feature engineering, evaluate SRC, GB, RF, and QRF models, and return predictions
-    and metrics.
+    Process watershed data, perform enhanced feature engineering with Rainfall lags, seasonal indices, and outlier
+    handling, evaluate SRC, GB, RF, and QRF models, and return predictions and metrics.
     Args:
         data_path (Path): Path to input data file (Excel or CSV).
         watershed_name (str): Name of the watershed ('Gilgel Abay' or 'Gumara').
@@ -54,7 +53,7 @@ def process_watershed(data_path, watershed_name, n_samples, is_excel=False):
             df = pd.read_csv(data_path)
         
         # Validate required columns to ensure data integrity
-        required_columns = ['Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC']
+        required_columns = ['Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC', 'Date']
         if not all(col in df.columns for col in required_columns):
             raise ValueError(f"{watershed_name} data must contain: {', '.join(required_columns)}")
         
@@ -62,46 +61,47 @@ def process_watershed(data_path, watershed_name, n_samples, is_excel=False):
         df_filtered = df.dropna(subset=['SSC']).head(n_samples)
         print(f"Sample count for {watershed_name}: {len(df_filtered)}")
         
+        # Convert Date column to datetime
+        df_filtered['Date'] = pd.to_datetime(df_filtered['Date'], errors='coerce')
+        if df_filtered['Date'].isna().any():
+            raise ValueError(f"{watershed_name} data contains invalid or missing Date values")
+        
         # Compute Annual_Rainfall and Cumulative_Rainfall
-        if 'Date' in df_filtered.columns:
-            df_filtered['Date'] = pd.to_datetime(df_filtered['Date'], errors='coerce')
-            if df_filtered['Date'].isna().any():
-                raise ValueError(f"{watershed_name} data contains invalid or missing Date values")
-            df_filtered['Annual_Rainfall'] = df_filtered.groupby(df_filtered['Date'].dt.year)['Rainfall'].transform('sum')
-            df_filtered['Cumulative_Rainfall'] = df_filtered['Rainfall'].rolling(window=30, min_periods=1).sum().bfill()
-        else:
-            print(f"Warning: No Date column in {watershed_name}. Computing Annual_Rainfall and Cumulative_Rainfall without dates.")
-            # Assume daily data, 365 days per year
-            df_filtered['Year'] = (df_filtered.index // 365) + 1990  # Approximate years from 1990
-            df_filtered['Annual_Rainfall'] = df_filtered.groupby('Year')['Rainfall'].transform('sum')
-            df_filtered['Cumulative_Rainfall'] = df_filtered['Rainfall'].rolling(window=30, min_periods=1).sum().bfill()
+        df_filtered['Annual_Rainfall'] = df_filtered.groupby(df_filtered['Date'].dt.year)['Rainfall'].transform('sum')
+        df_filtered['Cumulative_Rainfall'] = df_filtered['Rainfall'].rolling(window=30, min_periods=1).sum().bfill()
         
-        # Feature engineering to enhance model performance (Section 2.3)
-        df_filtered['MA_Discharge_3'] = df_filtered['Discharge'].rolling(window=3, min_periods=1).mean()  # 3-day moving average
-        df_filtered['Lag_Discharge_1'] = df_filtered['Discharge'].shift(1).bfill()  # 1-day lag for temporal dependency
-        df_filtered['Lag_Discharge_3'] = df_filtered['Discharge'].shift(3).bfill()  # 3-day lag for extended temporal dependency
+        # Enhanced feature engineering to improve predictor exploitation (Section 2.3)
+        df_filtered['MA_Discharge_3'] = df_filtered['Discharge'].rolling(window=3, min_periods=1).mean().bfill()
+        df_filtered['Lag_Discharge_1'] = df_filtered['Discharge'].shift(1).bfill()
+        df_filtered['Lag_Discharge_3'] = df_filtered['Discharge'].shift(3).bfill()
+        df_filtered['Lag_Rainfall_7'] = df_filtered['Rainfall'].shift(7).bfill()
+        df_filtered['Lag_Rainfall_14'] = df_filtered['Rainfall'].shift(14).bfill()
+        df_filtered['Julian_Day'] = df_filtered['Date'].dt.dayofyear
+        df_filtered['Sin_Julian'] = np.sin(2 * np.pi * df_filtered['Julian_Day'] / 365)
+        df_filtered['Cos_Julian'] = np.cos(2 * np.pi * df_filtered['Julian_Day'] / 365)
+        # Outlier handling using IQR
+        for col in ['Discharge', 'Rainfall', 'Temperature', 'ETo']:
+            Q1 = df_filtered[col].quantile(0.25)
+            Q3 = df_filtered[col].quantile(0.75)
+            IQR = Q3 - Q1
+            df_filtered = df_filtered[~((df_filtered[col] < (Q1 - 1.5 * IQR)) | (df_filtered[col] > (Q3 + 1.5 * IQR)))]
         
-        # Select predictors based on feature importance analysis (Section 3.2, Table 4)
-        predictors = ['Discharge', 'MA_Discharge_3', 'Lag_Discharge_1', 'Lag_Discharge_3', 'Rainfall', 'ETo', 'Temperature', 'Annual_Rainfall', 'Cumulative_Rainfall']
+        # Select predictors based on enhanced feature importance analysis (Section 3.2, Table 4)
+        predictors = ['Discharge', 'MA_Discharge_3', 'Lag_Discharge_1', 'Lag_Discharge_3', 'Rainfall', 'ETo', 'Temperature', 'Annual_Rainfall', 'Cumulative_Rainfall', 'Lag_Rainfall_7', 'Lag_Rainfall_14', 'Sin_Julian', 'Cos_Julian']
         target = 'SSC'
         X = df_filtered[predictors]
         y = df_filtered[target]
         
-        # Scale features to standardize input for machine learning models
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-        X_scaled = pd.DataFrame(X_scaled, columns=predictors, index=X.index)
-        
         # Split data into training (80%) and testing (20%) sets (Section 2.3)
-        X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
         X_train = X_train.reset_index(drop=True)
         X_test = X_test.reset_index(drop=True)
         y_train = y_train.reset_index(drop=True)
         y_test = y_test.reset_index(drop=True)
         
-        # Reconstruct discharge for SRC model from scaled data
-        X_train_raw = pd.DataFrame(scaler.inverse_transform(X_train), columns=predictors)
-        X_test_raw = pd.DataFrame(scaler.inverse_transform(X_test), columns=predictors)
+        # Reconstruct discharge for SRC model from raw data
+        X_train_raw = X_train
+        X_test_raw = X_test
         
         # Initialize results storage for model metrics
         results = {'Model': [], 'R²': [], 'Validation R²': [], 'RMSE': [], 'MAE': [], 'MAPE': [], 'Watershed': []}
@@ -176,7 +176,7 @@ def process_watershed(data_path, watershed_name, n_samples, is_excel=False):
         gb_search.fit(X_train, y_train)
         best_gb = gb_search.best_estimator_
         
-        gb_pred = best_gb.predict(X_scaled)
+        gb_pred = best_gb.predict(X)
         gb_test_pred = best_gb.predict(X_test)
         gb_r2 = r2_score(y, gb_pred)
         gb_val_r2 = r2_score(y_test, gb_test_pred)
@@ -208,7 +208,7 @@ def process_watershed(data_path, watershed_name, n_samples, is_excel=False):
         rf_search.fit(X_train, y_train)
         best_rf = rf_search.best_estimator_
         
-        rf_pred = best_rf.predict(X_scaled)
+        rf_pred = best_rf.predict(X)
         rf_test_pred = best_rf.predict(X_test)
         rf_r2 = r2_score(y, rf_pred)
         rf_val_r2 = r2_score(y_test, rf_test_pred)
@@ -242,7 +242,7 @@ def process_watershed(data_path, watershed_name, n_samples, is_excel=False):
         
         # Predict median (quantile=0.5) to match mean predictions of other models
         quantiles = [0.5]
-        qrf_pred = best_qrf.predict(X_scaled, quantiles=quantiles).flatten()
+        qrf_pred = best_qrf.predict(X, quantiles=quantiles).flatten()
         qrf_test_pred = best_qrf.predict(X_test, quantiles=quantiles).flatten()
         qrf_r2 = r2_score(y, qrf_pred)
         qrf_val_r2 = r2_score(y_test, qrf_test_pred)
