@@ -1,11 +1,11 @@
 # Script to generate Figure 4: Model performance evaluation for suspended sediment concentration (SSC) prediction.
 # Compares Segmented Rating Curve (SRC), Gradient Boosting (GB), Random Forest (RF), and Quantile Random Forest (QRF)
 # models for SSC prediction in Gilgel Abay and Gumara watersheds, producing scatter plots of observed vs. predicted SSC
-# (Section 3.1 of the research paper). Uses engineered predictors (Log_Discharge, MA_Discharge_3, Lag_Discharge,
-# Lag_Discharge_3, Rainfall, ETo) based on feature importance (Section 3.2). Outputs are saved in PNG format for
-# publication.
+# (Section 3.1 of the research paper). Uses engineered predictors (Discharge, MA_Discharge_3, Lag_Discharge_1,
+# Lag_Discharge_3, Rainfall, ETo, Temperature, Annual_Rainfall, Cumulative_Rainfall) based on feature importance
+# (Section 3.2). Outputs are saved in PNG and SVG formats for publication.
 # Author: Kindie B. Worku
-# Date: 2025-07-07
+# Date: 2025-07-16
 
 import pandas as pd
 import numpy as np
@@ -62,17 +62,27 @@ def process_watershed(data_path, watershed_name, n_samples, is_excel=False):
         df_filtered = df.dropna(subset=['SSC']).head(n_samples)
         print(f"Sample count for {watershed_name}: {len(df_filtered)}")
         
-        # Clip SSC to realistic ranges based on observed maxima (Table 2)
-        df_filtered['SSC'] = df_filtered['SSC'].clip(lower=0.01, upper=5.0 if watershed_name == "Gilgel Abay" else 2.07)
+        # Compute Annual_Rainfall and Cumulative_Rainfall
+        if 'Date' in df_filtered.columns:
+            df_filtered['Date'] = pd.to_datetime(df_filtered['Date'], errors='coerce')
+            if df_filtered['Date'].isna().any():
+                raise ValueError(f"{watershed_name} data contains invalid or missing Date values")
+            df_filtered['Annual_Rainfall'] = df_filtered.groupby(df_filtered['Date'].dt.year)['Rainfall'].transform('sum')
+            df_filtered['Cumulative_Rainfall'] = df_filtered['Rainfall'].rolling(window=30, min_periods=1).sum().bfill()
+        else:
+            print(f"Warning: No Date column in {watershed_name}. Computing Annual_Rainfall and Cumulative_Rainfall without dates.")
+            # Assume daily data, 365 days per year
+            df_filtered['Year'] = (df_filtered.index // 365) + 1990  # Approximate years from 1990
+            df_filtered['Annual_Rainfall'] = df_filtered.groupby('Year')['Rainfall'].transform('sum')
+            df_filtered['Cumulative_Rainfall'] = df_filtered['Rainfall'].rolling(window=30, min_periods=1).sum().bfill()
         
         # Feature engineering to enhance model performance (Section 2.3)
-        df_filtered['Log_Discharge'] = np.log1p(df_filtered['Discharge'])  # Log-transform discharge to reduce skewness
         df_filtered['MA_Discharge_3'] = df_filtered['Discharge'].rolling(window=3, min_periods=1).mean()  # 3-day moving average
-        df_filtered['Lag_Discharge'] = df_filtered['Discharge'].shift(1).bfill()  # 1-day lag for temporal dependency
+        df_filtered['Lag_Discharge_1'] = df_filtered['Discharge'].shift(1).bfill()  # 1-day lag for temporal dependency
         df_filtered['Lag_Discharge_3'] = df_filtered['Discharge'].shift(3).bfill()  # 3-day lag for extended temporal dependency
         
         # Select predictors based on feature importance analysis (Section 3.2, Table 4)
-        predictors = ['Log_Discharge', 'MA_Discharge_3', 'Lag_Discharge', 'Lag_Discharge_3', 'Rainfall', 'ETo']
+        predictors = ['Discharge', 'MA_Discharge_3', 'Lag_Discharge_1', 'Lag_Discharge_3', 'Rainfall', 'ETo', 'Temperature', 'Annual_Rainfall', 'Cumulative_Rainfall']
         target = 'SSC'
         X = df_filtered[predictors]
         y = df_filtered[target]
@@ -91,9 +101,7 @@ def process_watershed(data_path, watershed_name, n_samples, is_excel=False):
         
         # Reconstruct discharge for SRC model from scaled data
         X_train_raw = pd.DataFrame(scaler.inverse_transform(X_train), columns=predictors)
-        X_train_raw['Discharge'] = np.expm1(X_train_raw['Log_Discharge'])
         X_test_raw = pd.DataFrame(scaler.inverse_transform(X_test), columns=predictors)
-        X_test_raw['Discharge'] = np.expm1(X_test_raw['Log_Discharge'])
         
         # Initialize results storage for model metrics
         results = {'Model': [], 'R²': [], 'Validation R²': [], 'RMSE': [], 'MAE': [], 'MAPE': [], 'Watershed': []}
@@ -125,7 +133,6 @@ def process_watershed(data_path, watershed_name, n_samples, is_excel=False):
         if src_model_high and high_flow_full.any():
             X_src_high_full = np.log(df_filtered.loc[high_flow_full, 'Discharge'].values + 1e-6).reshape(-1, 1)
             src_pred[high_flow_full] = np.exp(src_model_high.predict(X_src_high_full))
-        src_pred = np.clip(src_pred, 0.01, 5.0 if watershed_name == "Gilgel Abay" else 2.07)
         
         low_flow_test = X_test_raw['Discharge'] < median_discharge
         high_flow_test = X_test_raw['Discharge'] >= median_discharge
@@ -136,7 +143,6 @@ def process_watershed(data_path, watershed_name, n_samples, is_excel=False):
         if src_model_high and high_flow_test.any():
             X_src_high_test = np.log(X_test_raw.loc[high_flow_test, 'Discharge'].values + 1e-6).reshape(-1, 1)
             src_test_pred[high_flow_test] = np.exp(src_model_high.predict(X_src_high_test))
-        src_test_pred = np.clip(src_test_pred, 0.01, 5.0 if watershed_name == "Gilgel Abay" else 2.07)
         
         # Compute SRC performance metrics
         src_r2 = r2_score(y, src_pred)
@@ -238,8 +244,6 @@ def process_watershed(data_path, watershed_name, n_samples, is_excel=False):
         quantiles = [0.5]
         qrf_pred = best_qrf.predict(X_scaled, quantiles=quantiles).flatten()
         qrf_test_pred = best_qrf.predict(X_test, quantiles=quantiles).flatten()
-        qrf_pred = np.clip(qrf_pred, 0.01, 5.0 if watershed_name == "Gilgel Abay" else 2.07)
-        qrf_test_pred = np.clip(qrf_test_pred, 0.01, 5.0 if watershed_name == "Gilgel Abay" else 2.07)
         qrf_r2 = r2_score(y, qrf_pred)
         qrf_val_r2 = r2_score(y_test, qrf_test_pred)
         qrf_rmse = np.sqrt(mean_squared_error(y, qrf_pred))
