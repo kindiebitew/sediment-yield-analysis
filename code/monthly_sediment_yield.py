@@ -11,11 +11,11 @@ import numpy as np
 from quantile_forest import RandomForestQuantileRegressor
 from sklearn.preprocessing import RobustScaler
 import matplotlib
-matplotlib.use('TkAgg')  
+matplotlib.use('TkAgg')  # Use TkAgg backend for Jupyter (ensure Tkinter is installed)
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
-from matplotlib.ticker import MaxNLocator
+from matplotlib.ticker import MaxNLocator, FixedLocator
 import warnings
 import os
 
@@ -180,13 +180,19 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
         df_inter['Date'] = pd.date_range(start='1990-01-01', periods=len(df_inter), freq='D')
         df_cont['Date'] = pd.date_range(start='1990-01-01', periods=len(df_cont), freq='D')
     
-    # Ensure numeric columns
+    # Ensure numeric columns and clip negative values
     numeric_cols = ['Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC']
     for col in numeric_cols:
         if col in df_inter:
             df_inter[col] = pd.to_numeric(df_inter[col], errors='coerce')
+            if (df_inter[col] < 0).any():
+                print(f"Warning: Negative values in {watershed_name} intermittent {col}, clipping to 0")
+                df_inter[col] = df_inter[col].clip(lower=0)
     for col in numeric_cols[:-1]:
         df_cont[col] = pd.to_numeric(df_cont[col], errors='coerce')
+        if (df_cont[col] < 0).any():
+            print(f"Warning: Negative values in {watershed_name} continuous {col}, clipping to 0")
+            df_cont[col] = df_cont[col].clip(lower=0)
     
     # Drop missing values
     df_inter = df_inter.dropna(subset=numeric_cols)
@@ -198,7 +204,37 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
         print(f"{watershed_name} intermittent data empty after cleaning")
         return None
     
-    # Feature engineering (Section 2.3)
+    # Check data coverage for rainfall
+    df_inter['Year'] = df_inter['Date'].dt.year
+    days_per_year = df_inter.groupby('Year')['Rainfall'].count()
+    sparse_years = days_per_year[days_per_year < 365 * 0.8].index
+    if not sparse_years.empty:
+        print(f"Warning: Sparse rainfall data in {watershed_name} for years {list(sparse_years)} (< 80% of days)")
+    
+    # Feature engineering: Annual and cumulative rainfall, lagged rainfall, and discharge features
+    df_inter = df_inter.sort_values('Date')
+    df_cont['Year'] = df_cont['Date'].dt.year
+    df_cont = df_cont.sort_values('Date')
+    
+    # Compute Annual Rainfall
+    annual_rainfall_inter = df_inter.groupby('Year')['Rainfall'].sum().reset_index()
+    annual_rainfall_inter.columns = ['Year', 'Annual_Rainfall']
+    df_inter = df_inter.merge(annual_rainfall_inter, on='Year', how='left')
+    annual_rainfall_cont = df_cont.groupby('Year')['Rainfall'].sum().reset_index()
+    annual_rainfall_cont.columns = ['Year', 'Annual_Rainfall']
+    df_cont = df_cont.merge(annual_rainfall_cont, on='Year', how='left')
+    
+    # Check for missing annual rainfall
+    if df_inter['Annual_Rainfall'].isna().any():
+        print(f"Warning: Missing Annual_Rainfall for some days in {watershed_name} intermittent data")
+    if df_cont['Annual_Rainfall'].isna().any():
+        print(f"Warning: Missing Annual_Rainfall for some days in {watershed_name} continuous data")
+    
+    # Compute Cumulative Rainfall
+    df_inter['Cumulative_Rainfall'] = df_inter.groupby('Year')['Rainfall'].cumsum()
+    df_cont['Cumulative_Rainfall'] = df_cont.groupby('Year')['Rainfall'].cumsum()
+    
+    # Feature engineering: Rolling means and lags for discharge
     df_inter['MA_Discharge_3'] = df_inter['Discharge'].rolling(window=3, min_periods=1).mean().bfill()
     df_inter['Lag_Discharge'] = df_inter['Discharge'].shift(1).bfill()
     df_inter['Lag_Discharge_3'] = df_inter['Discharge'].shift(3).bfill()
@@ -206,9 +242,25 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
     df_cont['Lag_Discharge'] = df_cont['Discharge'].shift(1).bfill()
     df_cont['Lag_Discharge_3'] = df_cont['Discharge'].shift(3).bfill()
     
-    # Select predictors (Section 3.2, using Discharge instead of Log_Discharge)
-    predictors = ['Discharge', 'MA_Discharge_3', 'Lag_Discharge', 'Lag_Discharge_3', 'Rainfall', 'ETo']
+    # Feature engineering: Lagged rainfall (7 and 14 days)
+    df_inter['Lag_Rainfall_7'] = df_inter['Rainfall'].shift(7).bfill()
+    df_inter['Lag_Rainfall_14'] = df_inter['Rainfall'].shift(14).bfill()
+    df_cont['Lag_Rainfall_7'] = df_cont['Rainfall'].shift(7).bfill()
+    df_cont['Lag_Rainfall_14'] = df_cont['Rainfall'].shift(14).bfill()
+    
+    # Select predictors (Section 3.2, including lagged rainfall)
+    predictors = ['Discharge', 'MA_Discharge_3', 'Lag_Discharge', 'Lag_Discharge_3', 'Rainfall', 'ETo', 
+                  'Annual_Rainfall', 'Cumulative_Rainfall', 'Lag_Rainfall_7', 'Lag_Rainfall_14']
     print(f"{watershed_name} Predictors: {predictors}")
+    
+    # Check for NaN or infinite values in predictors
+    for df, df_name in [(df_inter, 'intermittent'), (df_cont, 'continuous')]:
+        for col in predictors:
+            if col in df and (df[col].isna().any() or np.isinf(df[col]).any()):
+                print(f"Warning: {watershed_name} {df_name} data has NaN or infinite values in {col}, filling with 0")
+                df[col] = df[col].fillna(0)
+                df[col] = df[col].replace([np.inf, -np.inf], 0)
+    
     X_inter = df_inter[predictors]
     y_inter = df_inter['SSC']
     X_cont = df_cont[predictors]
@@ -222,21 +274,28 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
     try:
         qrf = RandomForestQuantileRegressor(**qrf_params)
         qrf.fit(X_inter_scaled, y_inter)
-        ssc_pred = qrf.predict(X_cont_scaled, quantiles=[0.25, 0.5, 0.75])  # Added quantiles for IQR
+        ssc_pred = qrf.predict(X_cont_scaled, quantiles=[0.25, 0.5, 0.75])
+        print(f"{watershed_name} SSC Prediction Summary (g/L):")
+        for q, preds in zip([0.25, 0.5, 0.75], ssc_pred.T):
+            print(f"Quantile {q}: {pd.Series(preds).describe()}")
+        
+        # Log feature importance
+        feature_importance = pd.DataFrame({
+            'Feature': predictors,
+            'Importance': qrf.feature_importances_
+        }).sort_values(by='Importance', ascending=False)
+        print(f"{watershed_name} Feature Importance:")
+        print(feature_importance)
+    
     except Exception as e:
         print(f"Error training/predicting QRF for {watershed_name}: {str(e)}")
         return None
-    
-    # Debug: SSC prediction summary
-    print(f"{watershed_name} SSC Prediction Summary (g/L):")
-    for q, preds in zip([0.25, 0.5, 0.75], ssc_pred.T):
-        print(f"Quantile {q}: {pd.Series(preds).describe()}")
     
     # Create output DataFrame with SSC quantiles
     df_cont['SSC_Q25'] = ssc_pred[:, 0]  # 0.25 quantile
     df_cont['SSC_Median'] = ssc_pred[:, 1]  # 0.5 quantile
     df_cont['SSC_Q75'] = ssc_pred[:, 2]  # 0.75 quantile
-    return df_cont[['Date', 'Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC_Q25', 'SSC_Median', 'SSC_Q75']]
+    return df_cont[['Date', 'Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC_Q25', 'SSC_Median', 'SSC_Q75', 'Annual_Rainfall', 'Cumulative_Rainfall']]
 
 def calculate_sediment_yield(df, watershed_name, area_km2, output_dir):
     """
@@ -347,8 +406,8 @@ def create_figure8(monthly_data_dict, output_dir):
         print(f"Error generating Figure 8: Missing data for watersheds: {missing_watersheds}")
         return
     
-    plt.figure(figsize=(16, 6))  # Create new figure explicitly
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6), sharey=False)
+    fig.patch.set_facecolor('white')
     
     all_lines = []
     all_labels = []
@@ -359,15 +418,20 @@ def create_figure8(monthly_data_dict, output_dir):
         yield_max = WATERSHED_CONFIG[watershed_name]['yield_max']
         rainfall_max = WATERSHED_CONFIG[watershed_name]['rainfall_max']
         
+        # Clip negative rainfall values
+        if (monthly_data['Rainfall'] < 0).any():
+            print(f"Warning: Negative rainfall values in {watershed_name}, clipping to 0")
+            monthly_data['Rainfall'] = monthly_data['Rainfall'].clip(lower=0)
+        
         # Rainfall bars (right axis, inverted) with fixed range
         ax1_rain = ax.twinx()
-        bars = ax1_rain.bar(monthly_data.index, monthly_data['Rainfall'], color='#003300', alpha=0.4, width=25, label='Rainfall (mm)')
-        ax1_rain.set_ylim(0, rainfall_max)
-        ax1_rain.invert_yaxis()  # Reverse axis
-        ax1_rain.set_ylabel('Rainfall (mm)', color='#003300', fontsize=18)
+        bars = ax1_rain.bar(monthly_data.index, monthly_data['Rainfall'], color='#2ca02c', alpha=0.7, width=15, label='Rainfall (mm)')
+        ax1_rain.set_ylim(rainfall_max, 0)  # Reverse axis, use rainfall_max from config
+        ax1_rain.set_yticks([0, 500, 1000, 1500, 1800])  # Fixed ticks
+        ax1_rain.set_ylabel('Rainfall (mm)', color='#2ca02c', fontsize=18)
         ax1_rain.yaxis.set_label_position('right')
         ax1_rain.yaxis.tick_right()
-        ax1_rain.tick_params(axis='y', labelsize=14)
+        ax1_rain.tick_params(axis='y', colors='#2ca02c', labelsize=14, pad=0)
         
         # Discharge (left axis) with fixed range
         ax2_discharge = ax
@@ -377,7 +441,7 @@ def create_figure8(monthly_data_dict, output_dir):
         ax2_discharge.set_ylabel('Discharge (m³/s)', color='#1f77b4', fontsize=18)
         ax2_discharge.yaxis.set_label_position('left')
         ax2_discharge.yaxis.tick_left()
-        ax2_discharge.tick_params(axis='y', labelsize=14)
+        ax2_discharge.tick_params(axis='y', colors='#1f77b4', labelsize=14, pad=0)
         
         # Sediment Yield (right axis, offset) with fixed range and uncertainty
         ax3_sediment = ax.twinx()
@@ -389,7 +453,7 @@ def create_figure8(monthly_data_dict, output_dir):
                                  color='#d62728', alpha=0.2, label='Uncertainty (IQR)')
         ax3_sediment.set_ylim(0, yield_max)
         ax3_sediment.set_ylabel('Sediment Yield (t/ha/month)', color='#d62728', fontsize=18)
-        ax3_sediment.tick_params(axis='y', labelsize=14)
+        ax3_sediment.tick_params(axis='y', colors='#d62728', labelsize=14, pad=0)
         
         # Set x-axis ticks for years (every 5 years)
         years = range(1990, 2021, 5)
