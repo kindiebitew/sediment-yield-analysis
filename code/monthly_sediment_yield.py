@@ -1,10 +1,9 @@
-#Script to generate Figure 8: Monthly sediment yield, rainfall, and discharge for Gilgel Abay and Gumara watersheds
-#(Section 3.3). Predicts daily SSC (g/L) for 1990–2020 using Quantile Random Forest (QRF) trained on intermittent data,
-#calculates daily sediment yield (t/ha/day), aggregates to monthly values, and produces a combination plot with a bar
-#plot for monthly rainfall (mm, reversed axis) and line plots for discharge (m³/s) and sediment yield (t/ha/month).
-#Outputs include Excel for daily data, and publication-quality PNG plots.
-#Author: Kindie B. Worku
-Date: 2025-07-07
+# Script to generate Figure 8: Monthly sediment yield, rainfall, and discharge for Gilgel Abay and Gumara watersheds
+# (Section 3.3). Predicts daily SSC (g/L) for 1990–2020 using Quantile Random Forest (QRF) trained on intermittent data,
+# calculates daily sediment yield (t/ha/day), aggregates to monthly values, and produces a combination plot with a bar
+# plot for monthly rainfall (mm, reversed axis) and line plots for discharge (m³/s) and sediment yield (t/ha/month).
+# Author: Kindie B. Worku
+# Date: 2025-07-16
 
 import pandas as pd
 import numpy as np
@@ -30,18 +29,18 @@ WATERSHED_CONFIG = {
         'intermittent': Path(r"C:\Users\worku\Documents\sediment-yield-analysis\data\Intermittent_data.xlsx"),
         'continuous': Path(r"C:\Users\worku\Documents\sediment-yield-analysis\data\continuous_data.xlsx"),
         'area_km2': 1664,
-        'discharge_max': 180,
-        'yield_max': 10,
-        'rainfall_max': 1000,
+        'discharge_max': 800,
+        'yield_max': 50,
+        'rainfall_max': 1800,
         'output_dir': Path(r"C:\Users\worku\Documents\sediment-yield-analysis\outputs")
     },
     'Gumara': {
         'intermittent': Path(r"C:\Users\worku\Documents\sediment-yield-analysis\data\Intermittent_data_gum.csv"),
         'continuous': Path(r"C:\Users\worku\Documents\sediment-yield-analysis\data\continuous_data_gum.csv"),
         'area_km2': 1394,
-        'discharge_max': 120,
-        'yield_max': 10,
-        'rainfall_max': 1000,
+        'discharge_max': 800,
+        'yield_max': 60,
+        'rainfall_max': 1800,
         'output_dir': Path(r"C:\Users\worku\Documents\sediment-yield-analysis\outputs")
     }
 }
@@ -132,17 +131,15 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
         raise ValueError(f"{watershed_name} intermittent data empty after cleaning")
     
     # Feature engineering (Section 2.3)
-    df_inter['Log_Discharge'] = np.log1p(df_inter['Discharge'].clip(lower=0))
     df_inter['MA_Discharge_3'] = df_inter['Discharge'].rolling(window=3, min_periods=1).mean().bfill()
     df_inter['Lag_Discharge'] = df_inter['Discharge'].shift(1).bfill()
     df_inter['Lag_Discharge_3'] = df_inter['Discharge'].shift(3).bfill()
-    df_cont['Log_Discharge'] = np.log1p(df_cont['Discharge'].clip(lower=0))
     df_cont['MA_Discharge_3'] = df_cont['Discharge'].rolling(window=3, min_periods=1).mean().bfill()
     df_cont['Lag_Discharge'] = df_cont['Discharge'].shift(1).bfill()
     df_cont['Lag_Discharge_3'] = df_cont['Discharge'].shift(3).bfill()
     
     # Select predictors (Section 3.2)
-    predictors = ['Log_Discharge', 'MA_Discharge_3', 'Lag_Discharge', 'Lag_Discharge_3', 'Rainfall', 'ETo']
+    predictors = ['Discharge', 'MA_Discharge_3', 'Lag_Discharge', 'Lag_Discharge_3', 'Rainfall', 'ETo']
     X_inter = df_inter[predictors]
     y_inter = df_inter['SSC']
     X_cont = df_cont[predictors]
@@ -333,7 +330,7 @@ def create_figure8(monthly_data_dict, output_dir):
     output_svg = output_dir / 'Figure8_Monthly_Sediment_Yield.svg'
     plt.savefig(output_png, dpi=600, format='png', bbox_inches='tight')
     plt.savefig(output_svg, format='svg', bbox_inches='tight')
-    print(f"Figure 8 saved to {output_png} (PNG) and {output_svg} (SVG)")
+    plt.show()  # Display the plot in Jupyter notebook
     plt.close()
 
 def main():
