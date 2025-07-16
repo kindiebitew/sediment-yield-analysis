@@ -27,7 +27,7 @@ plt.rcParams['font.size'] = 16
 WATERSHED_CONFIG = {
     'Gilgel Abay': {
         'intermittent': Path(r"C:\Users\worku\Documents\sediment-yield-analysis\data\Intermittent_data.xlsx"),
-        'continuous': Path(r"C:\Users\worku\Documents\sediment-yield-analysis\data\continuous_data.xlsx"),
+        'continuous': Path(r"C:\Users\worku\Documents\sediment-yield-analysis\data\continuous_data.csv"),
         'area_km2': 1664,
         'discharge_max': 800,
         'yield_max': 50,
