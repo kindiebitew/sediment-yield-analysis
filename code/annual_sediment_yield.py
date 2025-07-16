@@ -1,21 +1,23 @@
-# Script to generate Figure 7: Annual sediment yield, rainfall, and discharge for Gilgel Abay and Gumara watersheds
+# Script to generate Figure 7: Annual sediment yield, rainfall, and discharge for (a) Gilgel Abay and (b) Gumara watersheds
 # (Section 3.3). Predicts daily SSC (g/L) for 1990–2020 using Quantile Random Forest (QRF) trained on intermittent data,
 # calculates daily sediment yield (t/ha/day), and aggregates
-# annually (t/ha/yr). Produces a combination plot with a bar plot for annual rainfall (mm, reversed axis) and line plots
-# for discharge (m³/s) and sediment yield (t/ha/yr). Outputs include Excel for daily data, CSV for annual data, and
-# publication-quality PNG/SVG plots.
+# annually (t/ha/yr). Uncertainty is estimated using the IQR of SSC predictions combined with discharge variability.
+# Produces a side-by-side plot with bar plots for annual rainfall (mm, reversed axis) and line plots for discharge
+# (m³/s) and sediment yield (t/ha/yr), including uncertainty bands. Outputs include Excel for daily data, CSV for
+# annual data, and publication-quality PNG/SVG plots. Note: Upload to GitHub and assign a DOI via Zenodo.
 # Author: Kindie B. Worku
-# Date: 2025-07-16
+# Date: 2025-07-16 
 
+%matplotlib inline
 import pandas as pd
 import numpy as np
 from quantile_forest import RandomForestQuantileRegressor
-from sklearn.preprocessing import RobustScaler
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
 from matplotlib.ticker import MaxNLocator
 import warnings
+import os
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
@@ -68,23 +70,27 @@ LOAD_FACTOR = 86.4  # Converts m³/s × g/L to t/day (86,400 s/day × 10⁻⁶ t
 
 def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, is_excel_inter=False):
     """
-    Predict daily SSC (g/L) for 1990–2020 using QRF trained on intermittent data.
+    Predict daily SSC (g/L) for 1990–2020 using QRF trained on intermittent data, including cumulative and annual rainfall.
     Args:
         intermittent_path (Path): Path to intermittent data (Excel or CSV).
-        continuous_path (Path): Path to continuous data (Excel or CSV).
+        continuous_path (Path): Path to continuous data (CSV).
         watershed_name (str): Name of the watershed ('Gilgel Abay' or 'Gumara').
         qrf_params (dict): QRF hyperparameters.
         is_excel_inter (bool): Flag to indicate if intermittent file is Excel (True) or CSV (False).
     Returns:
-        DataFrame with continuous data and predicted SSC, or None if processing fails.
+        DataFrame with continuous data and predicted SSC, including quantiles for uncertainty, or None if processing fails.
     """
-    print(f"Predicting SSC for {watershed_name}...")
+    print(f"\nPredicting SSC for {watershed_name}...")
     
     # Check file existence
     if not intermittent_path.exists():
-        raise FileNotFoundError(f"Intermittent file not found: {intermittent_path}")
+        print(f"Intermittent file not found: {intermittent_path}")
+        print(f"Available files in {intermittent_path.parent}: {os.listdir(intermittent_path.parent)}")
+        return None
     if not continuous_path.exists():
-        raise FileNotFoundError(f"Continuous file not found: {continuous_path}")
+        print(f"Continuous file not found: {continuous_path}")
+        print(f"Available files in {continuous_path.parent}: {os.listdir(continuous_path.parent)}")
+        return None
     
     # Load data
     try:
@@ -92,28 +98,63 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
             df_inter = pd.read_excel(intermittent_path, engine='openpyxl')
         else:
             df_inter = pd.read_csv(intermittent_path)
-        df_cont = pd.read_csv(continuous_path) if continuous_path.suffix == '.csv' else pd.read_excel(continuous_path, engine='openpyxl')
+        
+        df_cont = pd.read_csv(continuous_path)
+        
         print(f"{watershed_name} Intermittent Data Shape: {df_inter.shape}")
+        print(f"{watershed_name} Intermittent Columns: {list(df_inter.columns)}")
         print(f"{watershed_name} Continuous Data Shape: {df_cont.shape}")
+        print(f"{watershed_name} Continuous Columns: {list(df_cont.columns)}")
     except Exception as e:
-        raise ValueError(f"Error loading data for {watershed_name}: {str(e)}")
+        print(f"Error loading data for {watershed_name}: {str(e)}")
+        return None
     
-    # Validate columns
-    required_cols_inter = ['Date', 'Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC']
-    required_cols_cont = ['Date', 'Rainfall', 'Discharge', 'Temperature', 'ETo']
+    # Define expected column names and possible alternatives
+    column_mapping = {
+        'Rainfall': ['Rainfall', 'rainfall', 'Rain', 'rain'],
+        'Discharge': ['Discharge', 'discharge', 'Flow', 'flow'],
+        'Temperature': ['Temperature', 'temperature', 'Temp', 'temp'],
+        'ETo': ['ETo', 'eto', 'ET0', 'Evapotranspiration', 'evapotranspiration'],
+        'SSC': ['SSC', 'ssc', 'SuspendedSediment', 'suspended_sediment'],
+        'Date': ['Date', 'date', 'Time', 'time', 'Timestamp', 'timestamp']
+    }
+    
+    # Rename columns if necessary
+    for df, df_name in [(df_inter, 'intermittent'), (df_cont, 'continuous')]:
+        for expected_col, alternatives in column_mapping.items():
+            found = False
+            for alt in alternatives:
+                if alt in df.columns:
+                    df.rename(columns={alt: expected_col}, inplace=True)
+                    found = True
+                    break
+            if not found and expected_col != 'Date' and not (df_name == 'continuous' and expected_col == 'SSC'):
+                print(f"Warning: {watershed_name} {df_name} data missing column: {expected_col}. Available: {list(df.columns)}")
+                return None
+    
+    # Validate required columns
+    required_cols_inter = ['Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC']
+    required_cols_cont = ['Rainfall', 'Discharge', 'Temperature', 'ETo']
     if not all(col in df_inter.columns for col in required_cols_inter):
-        raise ValueError(f"{watershed_name} intermittent data missing columns: {required_cols_inter}")
+        print(f"{watershed_name} intermittent data missing columns: {required_cols_inter}. Available: {list(df_inter.columns)}")
+        return None
     if not all(col in df_cont.columns for col in required_cols_cont):
-        raise ValueError(f"{watershed_name} continuous data missing columns: {required_cols_cont}")
+        print(f"{watershed_name} continuous data missing columns: {required_cols_cont}. Available: {list(df_cont.columns)}")
+        return None
     
-    # Convert dates to datetime
-    df_inter['Date'] = pd.to_datetime(df_inter['Date'], errors='coerce')
-    df_cont['Date'] = pd.to_datetime(df_cont['Date'], errors='coerce')
-    df_inter = df_inter.dropna(subset=['Date'])
-    df_cont = df_cont.dropna(subset=['Date'])
-    
-    if df_inter.empty or df_cont.empty:
-        raise ValueError(f"{watershed_name} data empty after date cleaning")
+    # Convert dates to datetime or use index if Date is missing
+    if 'Date' in df_inter.columns and 'Date' in df_cont.columns:
+        df_inter['Date'] = pd.to_datetime(df_inter['Date'], errors='coerce')
+        df_cont['Date'] = pd.to_datetime(df_cont['Date'], errors='coerce')
+        df_inter = df_inter.dropna(subset=['Date'])
+        df_cont = df_cont.dropna(subset=['Date'])
+        if df_inter.empty or df_cont.empty:
+            print(f"{watershed_name} data empty after date cleaning: Intermittent={len(df_inter)}, Continuous={len(df_cont)}")
+            return None
+    else:
+        print(f"Warning: No Date column in {watershed_name} {df_inter.columns if 'Date' not in df_inter.columns else df_cont.columns}. Using index.")
+        df_inter['Date'] = pd.date_range(start='1990-01-01', periods=len(df_inter), freq='D')
+        df_cont['Date'] = pd.date_range(start='1990-01-01', periods=len(df_cont), freq='D')
     
     # Ensure numeric columns
     numeric_cols = ['Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC']
@@ -126,9 +167,12 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
     # Drop missing values
     df_inter = df_inter.dropna(subset=numeric_cols)
     df_cont = df_cont.dropna(subset=numeric_cols[:-1])
+    print(f"{watershed_name} Intermittent Data after cleaning: {len(df_inter)} rows")
+    print(f"{watershed_name} Continuous Data after cleaning: {len(df_cont)} rows")
     
     if df_inter.empty:
-        raise ValueError(f"{watershed_name} intermittent data empty after cleaning")
+        print(f"{watershed_name} intermittent data empty after cleaning")
+        return None
     
     # Feature engineering (Section 2.3) with annual and cumulative rainfall
     df_inter['Year'] = df_inter['Date'].dt.year
@@ -152,7 +196,7 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
     df_cont = df_cont.sort_values('Date')
     df_cont['Cumulative_Rainfall'] = df_cont['Rainfall'].cumsum()
     
-    # Feature engineering (rolling means and lags)
+    # Feature engineering (rolling means and lags using raw Discharge)
     df_inter['MA_Discharge_3'] = df_inter['Discharge'].rolling(window=3, min_periods=1).mean().bfill()
     df_inter['Lag_Discharge'] = df_inter['Discharge'].shift(1).bfill()
     df_inter['Lag_Discharge_3'] = df_inter['Discharge'].shift(3).bfill()
@@ -160,134 +204,145 @@ def predict_ssc(intermittent_path, continuous_path, watershed_name, qrf_params, 
     df_cont['Lag_Discharge'] = df_cont['Discharge'].shift(1).bfill()
     df_cont['Lag_Discharge_3'] = df_cont['Discharge'].shift(3).bfill()
     
-    # Select predictors (Section 3.2)
+    # Select predictors (Section 3.2, including annual and cumulative rainfall)
     predictors = ['Discharge', 'MA_Discharge_3', 'Lag_Discharge', 'Lag_Discharge_3', 'Rainfall', 'ETo', 'Annual_Rainfall', 'Cumulative_Rainfall']
     X_inter = df_inter[predictors]
     y_inter = df_inter['SSC']
     X_cont = df_cont[predictors]
     
-    # Scale features
-    scaler = RobustScaler()
-    X_inter_scaled = scaler.fit_transform(X_inter)
-    X_cont_scaled = scaler.transform(X_cont)
-    
-    # Train QRF and predict SSC
+    # Train QRF and predict SSC with quantiles for uncertainty
     try:
         qrf = RandomForestQuantileRegressor(**qrf_params)
-        qrf.fit(X_inter_scaled, y_inter)
-        ssc_pred = qrf.predict(X_cont_scaled, quantiles=0.5)
+        qrf.fit(X_inter, y_inter)  # No scaling
+        ssc_pred = qrf.predict(X_cont, quantiles=[0.25, 0.5, 0.75])  # Shape: (n_samples, n_quantiles)
     except Exception as e:
-        raise ValueError(f"Error training/predicting QRF for {watershed_name}: {str(e)}")
+        print(f"Error training/predicting QRF for {watershed_name}: {str(e)}")
+        return None
     
     # Debug: SSC prediction summary
     print(f"{watershed_name} SSC Prediction Summary (g/L):")
-    print(pd.Series(ssc_pred).describe())
+    for q, preds in zip([0.25, 0.5, 0.75], ssc_pred.T):
+        print(f"Quantile {q}: {pd.Series(preds).describe()}")
     
-    # Create output DataFrame
-    df_cont['SSC'] = ssc_pred
-    return df_cont[['Date', 'Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC', 'Annual_Rainfall', 'Cumulative_Rainfall']]
+    # Assign SSC quantiles to DataFrame
+    df_cont['SSC_Q25'] = ssc_pred[:, 0]  # 0.25 quantile
+    df_cont['SSC_Median'] = ssc_pred[:, 1]  # 0.5 quantile
+    df_cont['SSC_Q75'] = ssc_pred[:, 2]  # 0.75 quantile
+    return df_cont[['Date', 'Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC_Q25', 'SSC_Median', 'SSC_Q75', 'Annual_Rainfall', 'Cumulative_Rainfall']]
 
 def calculate_sediment_yield(df, watershed_name, area_km2, output_dir):
     """
-    Calculate daily sediment yield (t/ha/day) and save to Excel.
+    Calculate daily sediment yield (t/ha/day) and uncertainty, then save to Excel.
     Args:
-        df (DataFrame): DataFrame with Date, Rainfall, Discharge, and SSC.
+        df (DataFrame): DataFrame with Date, Rainfall, Discharge, SSC_Q25, SSC_Median, SSC_Q75.
         watershed_name (str): Name of the watershed.
         area_km2 (float): Watershed area in km².
         output_dir (Path): Directory for output files.
     Returns:
-        DataFrame with daily sediment yield.
+        DataFrame with daily sediment yield and uncertainty.
     """
-    print(f"Calculating sediment yield for {watershed_name}...")
+    print(f"\nCalculating sediment yield for {watershed_name}...")
     
     # Create output directory
     output_dir.mkdir(exist_ok=True)
     
     # Filter for 1990–2020
     df = df[(df['Date'].dt.year >= 1990) & (df['Date'].dt.year <= 2020)]
+    print(f"{watershed_name} Data after 1990–2020 filter: {len(df)} rows")
     
-    # Calculate sediment yield (t/ha/day)
-    df['Sediment_Yield'] = df['Discharge'] * df['SSC'] * LOAD_FACTOR / (area_km2 * 100)
+    # Calculate sediment yield (t/ha/day) and uncertainty
+    df['Sediment_Yield_Median'] = df['Discharge'] * df['SSC_Median'] * LOAD_FACTOR / (area_km2 * 100)
+    df['Sediment_Yield_Q25'] = df['Discharge'] * df['SSC_Q25'] * LOAD_FACTOR / (area_km2 * 100)
+    df['Sediment_Yield_Q75'] = df['Discharge'] * df['SSC_Q75'] * LOAD_FACTOR / (area_km2 * 100)
     
     # Drop invalid data
-    df = df.dropna(subset=['Date', 'Rainfall', 'Discharge', 'SSC', 'Sediment_Yield', 'Annual_Rainfall', 'Cumulative_Rainfall'])
+    df = df.dropna(subset=['Date', 'Rainfall', 'Discharge', 'Sediment_Yield_Median', 'Sediment_Yield_Q25', 'Sediment_Yield_Q75', 'Annual_Rainfall', 'Cumulative_Rainfall'])
+    print(f"{watershed_name} Data after dropping NaNs: {len(df)} rows")
     
     if df.empty:
-        raise ValueError(f"{watershed_name} data empty after cleaning")
+        print(f"{watershed_name} data empty after cleaning")
+        return None
     
     # Save to Excel
     output_path = output_dir / f"{watershed_name.replace(' ', '_')}_Daily_SSC_Sediment_Yield.xlsx"
     df.to_excel(output_path, index=False)
     print(f"Daily data saved to {output_path}")
     
-    # Debug: Print sample
+    # Debug: Print sample and years
     print(f"\n{watershed_name} Daily Data Sample:")
     print(df.head(10))
     print(f"{watershed_name} Data Shape: {df.shape}")
+    print(f"{watershed_name} Years Covered: {df['Date'].dt.year.nunique()} ({df['Date'].dt.year.min()}–{df['Date'].dt.year.max()})")
     
     return df
 
 def process_annual_data(df, watershed_name):
     """
-    Aggregate daily data to annual sediment yield, rainfall, and discharge.
+    Aggregate daily data to annual sediment yield, rainfall, and discharge with uncertainty.
     Args:
-        df (DataFrame): DataFrame with daily data (Date, Rainfall, Discharge, Sediment_Yield).
+        df (DataFrame): DataFrame with daily data (Date, Rainfall, Discharge, Sediment_Yield_Median, Sediment_Yield_Q25, Sediment_Yield_Q75).
         watershed_name (str): Name of the watershed.
     Returns:
         DataFrame with annual aggregates.
     """
-    print(f"Processing annual data for {watershed_name}...")
+    print(f"\nProcessing annual data for {watershed_name}...")
     
     df['Year'] = df['Date'].dt.year
     yearly_data = df.groupby('Year').agg({
         'Discharge': 'mean',
         'Rainfall': 'sum',  # Sum daily rainfall for annual total
-        'Sediment_Yield': 'sum'  # Sum daily SY for annual total (t/ha/yr)
+        'Sediment_Yield_Median': 'sum',
+        'Sediment_Yield_Q25': 'sum',
+        'Sediment_Yield_Q75': 'sum'
     })
     
     yearly_data['Days_in_Year'] = df.groupby('Year')['Date'].nunique()
     yearly_data['Annual_Rainfall_mm'] = yearly_data['Rainfall']
-    yearly_data['Annual_Sediment_Yield_tons_ha'] = yearly_data['Sediment_Yield']
+    yearly_data['Annual_Sediment_Yield_tons_ha'] = yearly_data['Sediment_Yield_Median']
+    yearly_data['Annual_Sediment_Yield_Q25'] = yearly_data['Sediment_Yield_Q25']
+    yearly_data['Annual_Sediment_Yield_Q75'] = yearly_data['Sediment_Yield_Q75']
     
     # Debug: Print annual summary
     print(f"{watershed_name} Yearly Data Summary:")
     print(yearly_data[['Annual_Sediment_Yield_tons_ha', 'Discharge', 'Annual_Rainfall_mm']].describe())
-    print(f"{watershed_name} Annual Sediment Yield (t/ha/yr):")
-    print(yearly_data['Annual_Sediment_Yield_tons_ha'])
+    print(f"{watershed_name} Annual Sediment Yield with Uncertainty (t/ha/yr):")
+    print(yearly_data[['Annual_Sediment_Yield_tons_ha', 'Annual_Sediment_Yield_Q25', 'Annual_Sediment_Yield_Q75']])
+    print(f"{watershed_name} Years in Annual Data: {len(yearly_data)} ({yearly_data.index.min()}–{yearly_data.index.max()})")
     
     return yearly_data
 
 def create_figure7(yearly_data_dict, output_dir):
     """
-    Generate Figure 7: Combination plot with a bar plot for annual rainfall (mm, reversed axis) and line plots for discharge
-    and sediment yield (Section 3.3).
+    Generate Figure 7: Bar plot for annual rainfall (reversed axis) and line plots for discharge
+    and sediment yield for both watersheds, including uncertainty bands (Section 3.3).
     Args:
         yearly_data_dict (dict): Dictionary with annual data for each watershed.
         output_dir (Path): Directory for output plots.
+    Returns:
+        None
     """
-    print("Generating Figure 7...")
+    print("\nGenerating Figure 7...")
     
-    if not all(ws in yearly_data_dict for ws in ['Gilgel Abay', 'Gumara']):
-        missing = [ws for ws in ['Gilgel Abay', 'Gumara'] if ws not in yearly_data_dict]
-        raise ValueError(f"Missing data for watersheds: {missing}")
+    watersheds = ['Gilgel Abay', 'Gumara']
+    missing_watersheds = [w for w in watersheds if w not in yearly_data_dict]
+    if missing_watersheds:
+        print(f"Error generating Figure 7: Missing data for watersheds: {missing_watersheds}")
+        return
     
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6), sharey=False)
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6), sharey='row')
     fig.patch.set_facecolor('white')
     
-    all_lines = []
-    all_labels = []
-    
-    for ax, watershed_name in zip([ax1, ax2], ['Gilgel Abay', 'Gumara']):
+    for idx, watershed_name in enumerate(watersheds):
+        ax1_rain = axes[idx]
+        ax1_rain.set_facecolor('white')
         yearly_data = yearly_data_dict[watershed_name]
+        
         discharge_max = WATERSHED_CONFIG[watershed_name]['discharge_max']
         yield_max = WATERSHED_CONFIG[watershed_name]['yield_max']
         
-        # Handle rainfall axis (reversed)
         max_rainfall = yearly_data['Annual_Rainfall_mm'].max() * 1.1 if yearly_data['Annual_Rainfall_mm'].max() > 0 else 1000
         reversed_rainfall = max_rainfall - yearly_data['Annual_Rainfall_mm']
         
-        ax1_rain = ax
-        ax1_rain.set_facecolor('white')
         bars = ax1_rain.bar(yearly_data.index, reversed_rainfall, color='#2ca02c', alpha=0.7, width=0.4, label='Rainfall (mm)')
         
         ax2_discharge = ax1_rain.twinx()
@@ -299,6 +354,9 @@ def create_figure7(yearly_data_dict, output_dir):
         line_sediment = ax3_sediment.plot(yearly_data.index, yearly_data['Annual_Sediment_Yield_tons_ha'],
                                           color='#d62728', marker='s', linestyle='-', linewidth=1.5, markersize=6,
                                           label='Sediment Yield (t/ha/yr)')[0]
+        # Add uncertainty bands (IQR)
+        ax3_sediment.fill_between(yearly_data.index, yearly_data['Annual_Sediment_Yield_Q25'], yearly_data['Annual_Sediment_Yield_Q75'],
+                                  color='#d62728', alpha=0.2, label='Uncertainty (IQR)')
         
         ax1_rain.set_title(f"({'a' if watershed_name == 'Gilgel Abay' else 'b'}) {watershed_name}", fontsize=20)
         ax1_rain.set_xlabel('Year', fontsize=18)
@@ -320,26 +378,21 @@ def create_figure7(yearly_data_dict, output_dir):
         ax1_rain.xaxis.set_major_locator(MaxNLocator(integer=True))
         ax1_rain.grid(False)
         
-        # Debug: Print axis limits
         print(f"{watershed_name} Plot Axis Limits:")
         print(f"  Rainfall: 0 to {max_rainfall:.2f} mm")
         print(f"  Discharge: 0 to {discharge_max:.2f} m³/s")
         print(f"  Sediment Yield: 0 to {yield_max:.2f} t/ha/yr")
-        
-        if watershed_name == 'Gilgel Abay':
-            all_lines.extend([bars, line_discharge, line_sediment])
-            all_labels.extend(['Rainfall (mm)', 'Discharge (m³/s)', 'Sediment Yield (t/ha/yr)'])
+        print(f"{watershed_name} Years Plotted: {len(yearly_data)} ({yearly_data.index.min()}–{yearly_data.index.max()})")
     
-    fig.legend(all_lines, all_labels, loc='lower center', bbox_to_anchor=(0.5, -0.04), ncol=3, fontsize=16)
+    fig.legend([bars, line_discharge, line_sediment], ['Rainfall (mm)', 'Discharge (m³/s)', 'Sediment Yield (t/ha/yr)'],
+              loc='lower center', bbox_to_anchor=(0.5, -0.04), ncol=3, fontsize=16)
     plt.tight_layout(pad=2.0)
     
-    # Save plots
     output_png = output_dir / 'Figure7_Annual_Sediment_Yield.png'
     output_svg = output_dir / 'Figure7_Annual_Sediment_Yield.svg'
     plt.savefig(output_png, dpi=600, format='png', bbox_inches='tight')
     plt.savefig(output_svg, format='svg', bbox_inches='tight')
-    print(f"Figure 7 saved to {output_png} (PNG) and {output_svg} (SVG)")
-    plt.close()
+    plt.show()
 
 # Main processing loop
 yearly_data_dict = {}
@@ -355,6 +408,9 @@ for watershed_name, params in WATERSHED_CONFIG.items():
             QRF_PARAMS[watershed_name],
             is_excel_inter=(watershed_name == 'Gilgel Abay')
         )
+        if df_cont is None:
+            print(f"Skipping {watershed_name} due to data loading issues")
+            continue
         
         # Calculate daily sediment yield
         daily_data = calculate_sediment_yield(
@@ -363,6 +419,9 @@ for watershed_name, params in WATERSHED_CONFIG.items():
             params['area_km2'],
             params['output_dir']
         )
+        if daily_data is None:
+            print(f"Skipping {watershed_name} due to sediment yield calculation issues")
+            continue
         
         # Process annual data
         yearly_data = process_annual_data(daily_data, watershed_name)
@@ -378,8 +437,6 @@ for watershed_name, params in WATERSHED_CONFIG.items():
     except Exception as e:
         print(f"Error processing {watershed_name}: {str(e)}")
         continue
+
 # Generate Figure 7
-try:
-    create_figure7(yearly_data_dict, WATERSHED_CONFIG['Gilgel Abay']['output_dir'])
-except ValueError as e:
-    print(f"Error generating Figure 7: {str(e)}")
+create_figure7(yearly_data_dict, WATERSHED_CONFIG['Gumara']['output_dir'])
