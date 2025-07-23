@@ -19,4 +19,4 @@ Repository for "Machine Learning-Based Sedigraph Reconstruction for Enhanced Sed
 - `LICENSE`: MIT License.
 
 ## Data Availability
-The Python scripts for generating Figures 4–10, raw SSC and hydrological data for Gilgel Abay and Gumara watersheds, and output files (Figure1.jpg, Figure2.png–Figure10.png, and associated CSVs) are available at https://github.com/kindiebitew/sediment-yield-analysis for journal submission.
+The Python scripts for generating Figures, raw SSC and hydrological data for Gilgel Abay and Gumara watersheds, and output files (Figure1.png, Figure2–Figure10.png,.svg,.eps, in color and grey scale, and associated CSVs) are available at https://github.com/kindiebitew/sediment-yield-analysis for journal submission.
