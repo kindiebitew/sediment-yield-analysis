@@ -1,333 +1,194 @@
-# Script to generate Figure 6: Feature importance analysis for SSC prediction in Gilgel Abay and Gumara watersheds
-# using Quantile Random Forest (QRF). Computes importance scores for predictors (Discharge, MA_Discharge_3,
-# Lag_Discharge_1, Lag_Discharge_3, Rainfall, ETo, Temperature, Annual_Rainfall, Cumulative_Rainfall,
-# Lag_Rainfall_7, Lag_Rainfall_14) based on feature importance analysis (Section 3.2, Table 4). Produces a
-# sorted feature importance CSV and bar plot.
+# Script to compute QRF feature importance for SSC prediction in Gilgel Abay and Gumara watersheds (Section 3.2, Figure 6, Table 4).
+# Runs only if QRF is selected as the best model from model_selection.py.
+# Uses best hyperparameters from model_selection.py, no scaling/outlier removal.
 # Author: Kindie B. Worku
-# Date: 2025-07-16
+# Date: 2025-07-19
 
 import pandas as pd
 import numpy as np
-from quantile_forest import RandomForestQuantileRegressor
-from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
 import seaborn as sns
+from quantile_forest import RandomForestQuantileRegressor
+from sklearn.model_selection import train_test_split
 from pathlib import Path
-import os
+import warnings
 
-# Ensure matplotlib displays
+# Enable inline plotting for Jupyter Notebook
 %matplotlib inline
-print("Matplotlib inline enabled")
 
-# Set plot style for publication quality (Section 3.2)
+# Suppress warnings
+warnings.filterwarnings('ignore')
+
+# Set plot style
 sns.set_style('white')
 plt.rcParams['font.family'] = 'Times New Roman'
-plt.rcParams['font.size'] = 18
+plt.rcParams['font.size'] = 14
 
-# Set user and working directory
-USER = 'worku'  
-BASE_DIR = Path(f"C:\\Users\\{USER}\\Documents\\sediment-yield-analysis")
-try:
-    os.chdir(BASE_DIR)
-    print(f"Working directory set to: {os.getcwd()}")
-except Exception as e:
-    print(f"Error setting working directory: {e}")
-    BASE_DIR = Path(f"C:\\Users\\{USER}\\Desktop\\sediment-yield-analysis")
-    os.makedirs(BASE_DIR, exist_ok=True)
-    os.chdir(BASE_DIR)
-    print(f"Fallback working directory: {os.getcwd()}")
-
-# Define data paths and QRF parameters for each watershed
-data_paths = {
-    'Gilgel Abay': {
-        'intermittent': BASE_DIR / "data" / "Intermittent_data.xlsx",
-        'n_samples': 251,
-        'qrf_params': {
-            'n_estimators': 1000,
-            'max_depth': 30,
-            'min_samples_split': 5,
-            'min_samples_leaf': 2,
-            'max_features': 'log2',
-            'random_state': 42
-        }
-    },
-    'Gumara': {
-        'intermittent': BASE_DIR / "data" / "Intermittent_data_gum.csv",
-        'n_samples': 245,
-        'qrf_params': {
-            'n_estimators': 1000,
-            'max_depth': 30,
-            'min_samples_split': 5,
-            'min_samples_leaf': 2,
-            'max_features': 'log2',
-            'random_state': 42
-        }
-    }
-}
-
-# Verify input file paths
-print("\nChecking input file paths...")
-for watershed, params in data_paths.items():
-    path = params['intermittent']
-    print(f"File {path} exists: {path.exists()}")
-
-# Define and create output directory
+# Directories
+BASE_DIR = Path(r"C:\Users\worku\Documents\sediment-yield-analysis")
 OUTPUT_DIR = BASE_DIR / "outputs"
-try:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"Output directory created/confirmed: {OUTPUT_DIR}")
-except Exception as e:
-    print(f"Error creating output directory: {e}")
-    OUTPUT_DIR = Path(f"C:\\Users\\{USER}\\Desktop\\sediment_outputs")
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"Using fallback output directory: {OUTPUT_DIR}")
+OUTPUT_DIR.mkdir(exist_ok=True)
 
-def extract_feature_importance(intermittent_path, watershed_name, n_samples, qrf_params, is_excel=False):
-    """
-    Load data, perform enhanced feature engineering with annual/cumulative rainfall, Rainfall lags,
-    seasonal indices, and outlier handling, train QRF model, and compute feature importance scores.
-    Args:
-        intermittent_path (Path): Path to input data file (Excel or CSV).
-        watershed_name (str): Name of the watershed ('Gilgel Abay' or 'Gumara').
-        n_samples (int): Number of samples to process (251 for Gilgel Abay, 245 for Gumara).
-        qrf_params (dict): QRF hyperparameters aligned with model performance evaluation (Section 3.1).
-        is_excel (bool): Flag to indicate if input file is Excel (True) or CSV (False).
-    Returns:
-        Dictionary of feature importance scores or None if processing fails.
-    """
-    print(f"\n=== Processing {watershed_name} ===")
+# Function to load best model parameters (unchanged)
+def load_best_model_params(watershed_name, test_size=0.3):
+    try:
+        results_path = OUTPUT_DIR / f"model_performance_{watershed_name.lower().replace(' ', '_')}_{int(test_size*100)}split.csv"
+        params_path = OUTPUT_DIR / f"best_params_{watershed_name.lower().replace(' ', '_')}_{int(test_size*100)}split.csv"
+        
+        if not results_path.exists() or not params_path.exists():
+            print(f"Error: Required files not found for {watershed_name} ({results_path}, {params_path})")
+            return None, None
+        
+        results_df = pd.read_csv(results_path)
+        params_df = pd.read_csv(params_path)
+        
+        best_model = results_df.loc[results_df['Validation R²'].idxmax()]['Model']
+        if best_model != 'QRF':
+            print(f"QRF not selected for {watershed_name} (Best model: {best_model}). Skipping feature importance.")
+            return best_model, None
+        
+        qrf_params = params_df[params_df['Model'] == 'QRF']['Parameters'].iloc[0]
+        import ast
+        qrf_params = ast.literal_eval(qrf_params)
+        print(f"QRF selected for {watershed_name} with params: {qrf_params}")
+        return best_model, qrf_params
     
-    # Check if input file exists
-    if not intermittent_path.exists():
-        print(f"Error: File not found at {intermittent_path}")
-        return None
-
-    # Load data
-    print(f"Loading data from {intermittent_path}...")
-    try:
-        if is_excel:
-            df_inter = pd.read_excel(intermittent_path, engine='openpyxl')
-        else:
-            df_inter = pd.read_csv(intermittent_path)
-        print(f"Successfully loaded {intermittent_path} with {len(df_inter)} rows")
     except Exception as e:
-        print(f"Error loading data: {str(e)}")
+        print(f"Error loading best model for {watershed_name}: {str(e)}")
+        return None, None
+
+# Function to compute QRF feature importance (unchanged)
+def compute_feature_importance(data_path, watershed_name, n_samples, qrf_params, test_size=0.3):
+    if qrf_params is None:
+        print(f"Skipping feature importance for {watershed_name}: QRF not selected.")
         return None
-
-    # Validate required columns
-    required_cols = ['Date', 'Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC']
-    missing_cols = [col for col in required_cols if col not in df_inter.columns]
-    if missing_cols:
-        print(f"{watershed_name} missing columns: {missing_cols}")
-        return None
-    print(f"Columns: {df_inter.columns.tolist()}")
-
-    # Display raw data sample
-    print(f"Raw data sample for {watershed_name}:\n{df_inter.head(5)}")
-
-    # Convert columns to numeric
-    numeric_cols = ['Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC']
-    for col in numeric_cols:
-        df_inter[col] = pd.to_numeric(df_inter[col], errors='coerce')
     
-    # Convert Date column to datetime
     try:
-        df_inter['Date'] = pd.to_datetime(df_inter['Date'], errors='coerce')
-        if df_inter['Date'].isna().any():
-            print(f"Warning: Some dates could not be parsed in {watershed_name}. Trying alternative formats...")
-            for fmt in ['%d/%m/%Y', '%m/%d/%Y', '%Y-%m-%d', '%Y/%m/%d', '%d-%m-%Y', '%m-%d-%Y']:
-                df_inter['Date'] = pd.to_datetime(df_inter['Date'], format=fmt, errors='coerce')
-                if not df_inter['Date'].isna().any():
-                    print(f"Successfully parsed dates with format: {fmt}")
-                    break
-            if df_inter['Date'].isna().any():
-                print(f"Error: Unable to parse some dates in {watershed_name}")
-                print("Unparseable dates:\n", df_inter[df_inter['Date'].isna()][['Date']].head(10))
-                return None
-        print("Date column sample:\n", df_inter['Date'].head())
-        df_inter['Year'] = df_inter['Date'].dt.year
+        df = pd.read_csv(data_path)
+        required_columns = ['Rainfall', 'Discharge', 'Temperature', 'ETo', 'SSC', 'Date', 'Annual_Rainfall',
+                           'Cumulative_Rainfall', 'Lag_Discharge_1', 'Lag_Discharge_3', 'Sin_Julian', 'Cos_Julian']
+        if not all(col in df.columns for col in required_columns):
+            raise ValueError(f"{watershed_name} data must contain: {', '.join(required_columns)}")
+        
+        df_filtered = df.dropna(subset=['SSC']).head(n_samples)
+        print(f"Sample count for {watershed_name}: {len(df_filtered)}")
+        if len(df_filtered) < 50:
+            raise ValueError(f"Insufficient samples for {watershed_name}: {len(df_filtered)}")
+        
+        predictors = ['Discharge', 'MA_Discharge_3', 'Lag_Discharge_1', 'Lag_Discharge_3', 'Rainfall', 'ETo',
+                      'Temperature', 'Annual_Rainfall', 'Cumulative_Rainfall', 'Sin_Julian', 'Cos_Julian']
+        target = 'SSC'
+        X = df_filtered[predictors]
+        y = df_filtered[target]
+        
+        discharge_bins = pd.qcut(X['Discharge'], q=7, duplicates='drop')
+        X_train, _, y_train, _ = train_test_split(
+            X, y, test_size=test_size, stratify=discharge_bins, random_state=42
+        )
+        
+        print(f"Training QRF for {watershed_name} with params: {qrf_params}")
+        qrf = RandomForestQuantileRegressor(**qrf_params, random_state=42)
+        qrf.fit(X_train, y_train)
+        
+        feature_importance = pd.DataFrame({
+            'Feature': predictors,
+            'Importance': qrf.feature_importances_
+        }).sort_values(by='Importance', ascending=False)
+        feature_importance.to_csv(OUTPUT_DIR / f"feature_importance_{watershed_name.lower().replace(' ', '_')}_70split.csv", index=False)
+        print(f"Feature importance saved for {watershed_name}")
+        
+        return feature_importance
+    
     except Exception as e:
-        print(f"Error parsing Date column for {watershed_name}: {str(e)}")
+        print(f"Error computing feature importance for {watershed_name}: {str(e)}")
         return None
 
-    # Compute Annual Rainfall
-    print(f"Computing Annual Rainfall for {watershed_name}...")
-    annual_rainfall = df_inter.groupby('Year')['Rainfall'].sum().reset_index()
-    annual_rainfall.columns = ['Year', 'Annual_Rainfall']
-    df_inter = df_inter.merge(annual_rainfall, on='Year', how='left')
-    print(f"Annual Rainfall sample:\n{annual_rainfall.head()}")
-
-    # Compute Cumulative Rainfall
-    print(f"Computing Cumulative Rainfall for {watershed_name}...")
-    df_inter = df_inter.sort_values('Date')  # Ensure sorted by date
-    df_inter['Cumulative_Rainfall'] = df_inter['Rainfall'].cumsum()
-    print(f"Cumulative Rainfall sample:\n{df_inter[['Date', 'Rainfall', 'Cumulative_Rainfall']].head()}")
-
-    # Check for NaN values
-    nan_counts = df_inter[numeric_cols + ['Annual_Rainfall', 'Cumulative_Rainfall']].isna().sum()
-    if nan_counts.sum() > 0:
-        print(f"Warning: NaN values found in {watershed_name}:\n{nan_counts}")
-        return None
-    print(f"No NaN values in {watershed_name} data")
-
-    # Limit to specified number of samples
-    if len(df_inter) < n_samples:
-        print(f"Warning: {watershed_name} has only {len(df_inter)} samples, expected {n_samples}")
-    df_inter = df_inter.head(n_samples)
-    print(f"Final sample count for {watershed_name}: {len(df_inter)}")
-
-    # Check if data is empty
-    if df_inter.empty:
-        print(f"{watershed_name} data empty after processing")
-        return None
-
-    # Enhanced feature engineering (Section 2.3)
-    print(f"Performing enhanced feature engineering for {watershed_name}...")
-    df_inter['MA_Discharge_3'] = df_inter['Discharge'].rolling(window=3, min_periods=1).mean().bfill()
-    df_inter['Lag_Discharge_1'] = df_inter['Discharge'].shift(1).bfill()
-    df_inter['Lag_Discharge_3'] = df_inter['Discharge'].shift(3).bfill()
-    # Add Rainfall lags
-    df_inter['Lag_Rainfall_7'] = df_inter['Rainfall'].shift(7).bfill()
-    df_inter['Lag_Rainfall_14'] = df_inter['Rainfall'].shift(14).bfill()
-    # Add seasonal indices
-    df_inter['Julian_Day'] = df_inter['Date'].dt.dayofyear
-    df_inter['Sin_Julian'] = np.sin(2 * np.pi * df_inter['Julian_Day'] / 365)
-    df_inter['Cos_Julian'] = np.cos(2 * np.pi * df_inter['Julian_Day'] / 365)
-    # Outlier handling using IQR
-    for col in ['Discharge', 'Rainfall', 'Temperature', 'ETo']:
-        Q1 = df_inter[col].quantile(0.25)
-        Q3 = df_inter[col].quantile(0.75)
-        IQR = Q3 - Q1
-        df_inter = df_inter[~((df_inter[col] < (Q1 - 1.5 * IQR)) | (df_inter[col] > (Q3 + 1.5 * IQR)))]
-
-    # Select predictors
-    predictors = ['Discharge', 'MA_Discharge_3', 'Lag_Discharge_1', 'Lag_Discharge_3', 'Rainfall', 'ETo', 'Temperature', 'Annual_Rainfall', 'Cumulative_Rainfall', 'Lag_Rainfall_7', 'Lag_Rainfall_14', 'Sin_Julian', 'Cos_Julian']
-    X_inter = df_inter[predictors]
-    y_inter = df_inter['SSC']
-    print(f"Predictors for {watershed_name}: {predictors}")
-
-    # Compute and display feature correlations
-    print(f"\nFeature correlations for {watershed_name}:\n{X_inter.corr()}\n")
-    plt.figure(figsize=(12, 8))
-    sns.heatmap(X_inter.corr(), annot=True, cmap='coolwarm', vmin=-1, vmax=1, center=0)
-    plt.title(f'Correlation Matrix - {watershed_name}', fontsize=20)
-    plt.tight_layout()
-    corr_output = OUTPUT_DIR / f"correlation_matrix_{watershed_name.lower().replace(' ', '_')}.png"
-    try:
-        plt.savefig(corr_output, dpi=600, transparent=True, bbox_inches='tight')
-        print(f"Correlation matrix saved to {corr_output}")
-    except Exception as e:
-        print(f"Error saving correlation matrix for {watershed_name}: {e}")
-    plt.show()
-
-    # Scale features
-    print(f"Scaling features for {watershed_name}...")
-    scaler = StandardScaler()
-    X_inter_scaled = scaler.fit_transform(X_inter)
-
-    # Train QRF model
-    print(f"Training QRF model for {watershed_name}...")
-    try:
-        qrf = RandomForestQuantileRegressor(**qrf_params)
-        qrf.fit(X_inter_scaled, y_inter)
-    except Exception as e:
-        print(f"Error training QRF for {watershed_name}: {str(e)}")
-        return None
-
-    # Extract feature importance scores
-    importances = qrf.feature_importances_
-    importance_dict = dict(zip(predictors, importances))
-    print(f"{watershed_name} Feature Importances:")
-    for feature, importance in importance_dict.items():
-        print(f"{feature}: {importance:.6f}")
-    print(f"Sum of importances: {sum(importances):.6f}")
-
-    return importance_dict
-
-# Compute feature importances for both watersheds
+# Process watersheds
+data_paths = {
+    'Gilgel Abay': {'data': OUTPUT_DIR / "gilgel_abay_features.csv", 'n_samples': 251},
+    'Gumara': {'data': OUTPUT_DIR / "gumara_features.csv", 'n_samples': 245}
+}
 feature_importances = {}
+
 for watershed_name, params in data_paths.items():
-    print(f"\nStarting processing for {watershed_name}")
-    importances = extract_feature_importance(
-        params['intermittent'],
-        watershed_name,
-        params['n_samples'],
-        params['qrf_params'],
-        is_excel=(watershed_name == 'Gilgel Abay')
-    )
-    if importances:
-        feature_importances[watershed_name] = importances
+    best_model, qrf_params = load_best_model_params(watershed_name, test_size=0.3)
+    if best_model == 'QRF':
+        fi = compute_feature_importance(
+            params['data'], watershed_name, params['n_samples'], qrf_params, test_size=0.3
+        )
+        if fi is not None:
+            feature_importances[watershed_name] = fi
     else:
-        print(f"Failed to compute importances for {watershed_name}")
+        print(f"Skipping {watershed_name}: Best model is {best_model}, not QRF.")
 
-# Debug: Check feature importances
-print(f"\nNumber of watersheds processed: {len(feature_importances)}")
-print("Feature Importances Dictionary:", feature_importances)
-
-# Generate combined feature importance table and plot
-if len(feature_importances) >= 1:
-    print("\nGenerating combined feature importance plot...")
-    predictors = ['Discharge', 'MA_Discharge_3', 'Lag_Discharge_1', 'Lag_Discharge_3', 'Rainfall', 'ETo', 'Temperature', 'Annual_Rainfall', 'Cumulative_Rainfall', 'Lag_Rainfall_7', 'Lag_Rainfall_14', 'Sin_Julian', 'Cos_Julian']
-    data = {
-        'Feature': predictors,
-        'Gilgel Abay': [feature_importances.get('Gilgel Abay', {}).get(f, 0) for f in predictors],
-        'Gumara': [feature_importances.get('Gumara', {}).get(f, 0) for f in predictors]
-    }
-    df = pd.DataFrame(data)
-
-    # Sort features by average importance
-    df['Average_Importance'] = df[['Gilgel Abay', 'Gumara']].mean(axis=1)
-    df = df.sort_values('Average_Importance', ascending=False).drop('Average_Importance', axis=1)
-    sorted_predictors = df['Feature'].tolist()
-    print(f"\nFeature Importance DataFrame (Sorted):\n{df}")
-
-    # Save sorted feature importance table
-    csv_output = OUTPUT_DIR / "feature_importances_qrf_fig6.csv"
-    try:
-        df.to_csv(csv_output, index=False)
-        print(f"Feature importances saved to {csv_output}")
-    except Exception as e:
-        print(f"Error saving CSV: {e}")
-
-    # Prepare data for bar plot
-    df_melted = pd.melt(df, id_vars=['Feature'], value_vars=['Gilgel Abay', 'Gumara'],
-                        var_name='Watershed', value_name='Importance')
-    print(f"\nDebug: Melted DataFrame for Plotting:\n{df_melted}")
-
-    # Generate bar plot for feature importance (Figure 6)
-    plt.figure(figsize=(12, 6))  # Increased width for more predictors
-    sns_plot = sns.barplot(data=df_melted, x='Feature', y='Importance', hue='Watershed',
-                           order=sorted_predictors,
-                           palette={'Gilgel Abay': '#1f77b4', 'Gumara': '#2ca02c'})
-
-    # Add importance values on top of bars (only for non-zero heights)
-    bar_width = 0.3
-    for i, row in df_melted.iterrows():
-        feature_idx = sorted_predictors.index(row['Feature'])
-        watershed = row['Watershed']
-        height = row['Importance']
-        if height > 0:  # Only show labels for non-zero importances
-            x = feature_idx - bar_width / 2 if watershed == 'Gilgel Abay' else feature_idx + bar_width / 2
-            plt.text(x, height + 0.01, f'{height:.2f}', ha='center', va='bottom', fontsize=12, color='black')
+# Generate Figure 6 (Feature Importance) - Modified Section
+if feature_importances:
+    combined_feature_importance = pd.concat(
+        [fi.assign(Watershed=w) for w, fi in feature_importances.items()],
+        ignore_index=True
+    )
+    combined_feature_importance.to_csv(OUTPUT_DIR / "feature_importance_comparison_70split.csv", index=False)
     
-    # Configure plot aesthetics
+    # Prepare data for plotting
+    features = combined_feature_importance['Feature'].unique()
+    n_features = len(features)
+    bar_width = 0.35
+    index = np.arange(n_features)
+    
+    # Create figure
+    plt.figure(figsize=(10, 6))
+    
+    # Plot bars for each watershed with color and hatching
+    gilgel_data = combined_feature_importance[combined_feature_importance['Watershed'] == 'Gilgel Abay']
+    gumara_data = combined_feature_importance[combined_feature_importance['Watershed'] == 'Gumara']
+    
+    plt.bar(index - bar_width/2, gilgel_data['Importance'], bar_width, 
+            color='#1f77b4', hatch='', label='Gilgel Abay')  # Solid for Gilgel Abay
+    plt.bar(index + bar_width/2, gumara_data['Importance'], bar_width, 
+            color='#2ca02c', hatch='///', label='Gumara')  # Hatched for Gumara
+    
+    # Add value labels on top of bars
+    for i, (gilgel_val, gumara_val) in enumerate(zip(gilgel_data['Importance'], gumara_data['Importance'])):
+        if gilgel_val > 0:
+            plt.text(i - bar_width/2, gilgel_val + 0.01, f'{gilgel_val:.2f}', ha='center', va='bottom', fontsize=12)
+        if gumara_val > 0:
+            plt.text(i + bar_width/2, gumara_val + 0.01, f'{gumara_val:.2f}', ha='center', va='bottom', fontsize=12)
+    
     plt.xlabel('Feature', fontsize=20)
-    plt.ylabel('Feature Importance', fontsize=20)
-    plt.xticks(rotation=45, ha='right', fontsize=16)
+    plt.ylabel('Feature Importance (%)', fontsize=20)
+    plt.xticks(index, features, rotation=45, ha='right', fontsize=16)
     plt.yticks(fontsize=16)
-    plt.legend(title='Basin', fontsize=16, title_fontsize=16, loc='upper right')
-    plt.ylim(0, max(df_melted['Importance']) + 0.1 if df_melted['Importance'].max() > 0 else 1.0)
+    plt.legend(title='Watershed', fontsize=16, title_fontsize=16)
+    plt.ylim(0, max(combined_feature_importance['Importance']) + 0.15)
     plt.tight_layout()
-
-    # Save and display bar plot
-    plot_output = OUTPUT_DIR / "Figure6_feature_importance_qrf.png"
-    try:
-        plt.savefig(plot_output, dpi=600, transparent=True, bbox_inches='tight')
-        print(f"Figure 6 saved to {plot_output}")
-    except Exception as e:
-        print(f"Error saving Figure 6: {e}")
+    
+    # Save color version for online
+    plt.savefig(OUTPUT_DIR / "Figure6_feature_importance_qrf_70split_color.png", dpi=600, transparent=True, bbox_inches='tight')
+    plt.savefig(OUTPUT_DIR / "Figure6_feature_importance_qrf_70split_color.svg", format='svg', transparent=True, bbox_inches='tight')
+    
+    # Save grayscale version for print
+    plt.clf()  # Clear the figure
+    plt.figure(figsize=(10, 6))
+    plt.bar(index - bar_width/2, gilgel_data['Importance'], bar_width, 
+            color='#000000', hatch='', label='Gilgel Abay')  # Black for Gilgel Abay
+    plt.bar(index + bar_width/2, gumara_data['Importance'], bar_width, 
+            color='#666666', hatch='///', label='Gumara')  # Gray for Gumara
+    for i, (gilgel_val, gumara_val) in enumerate(zip(gilgel_data['Importance'], gumara_data['Importance'])):
+        if gilgel_val > 0:
+            plt.text(i - bar_width/2, gilgel_val + 0.01, f'{gilgel_val:.2f}', ha='center', va='bottom', fontsize=12)
+        if gumara_val > 0:
+            plt.text(i + bar_width/2, gumara_val + 0.01, f'{gumara_val:.2f}', ha='center', va='bottom', fontsize=12)
+    plt.xlabel('Feature', fontsize=20)
+    plt.ylabel('Feature Importance (%)', fontsize=20)
+    plt.xticks(index, features, rotation=45, ha='right', fontsize=16)
+    plt.yticks(fontsize=16)
+    plt.legend(title='Watershed', fontsize=16, title_fontsize=16)
+    plt.ylim(0, max(combined_feature_importance['Importance']) + 0.15)
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "Figure6_feature_importance_qrf_70split_grayscale.png", dpi=600, transparent=True, bbox_inches='tight')
+    plt.savefig(OUTPUT_DIR / "Figure6_feature_importance_qrf_70split_grayscale.eps", format='eps', dpi=600, transparent=True, bbox_inches='tight')
+    
     plt.show()
+    plt.close()
 else:
-    print("\nNo feature importances calculated for any watershed.")
-    for watershed, importances in feature_importances.items():
-        print(f"{watershed}: {importances}")
+    print("No feature importance calculated: QRF not selected for any watershed.")
