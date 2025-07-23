@@ -10,7 +10,7 @@ Repository for "Machine Learning-Based Sedigraph Reconstruction for Enhanced Sed
 - `code/annual_sediment_yield.py`: Generates Figures 7 (annual yields, subfigures a-b, PNG, SVG, EPS).
 - `code/monthly_sediment_yield.py`: Generates Figure 8 (monthly yields, subfigures a-b, PNG, SVG, EPS).
 - `code/seasonal_sediment_yield.py`: Generates Figure 9 (seasonal yields, subfigures a-b, PNG, SVG, EPS).
-- `code/sedi_land_use.py`: Generates Figure 10 (PNG, SVG, EPS)
+- `code/sedi_land_use.py`: Generates Figure 10 (sediment yield-land use correlation plot, PNG, SVG, EPS)
 - `data/Intermittent_data.xlsx`: Intermittent data for Gilgel Abay.
 - `data/continuous_data.csv`: Continuous data for Gilgel Abay.
 - `data/Intermittent_data_gum.csv`: Intermittent data for Gumara.
