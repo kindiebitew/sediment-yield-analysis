@@ -1,0 +1,9 @@
+Model,Parameters,Watershed
+SRC,"{'a': np.float64(0.08862878211661689), 'b': np.float64(0.6657344118170888)}",Gilgel Abay
+GB,"{'subsample': 1.0, 'n_estimators': 5000, 'min_samples_split': 2, 'min_samples_leaf': 1, 'max_features': 0.7, 'max_depth': 20, 'learning_rate': 0.1}",Gilgel Abay
+RF,"{'n_estimators': 3000, 'min_samples_split': 2, 'min_samples_leaf': 3, 'max_samples': 1.0, 'max_features': 0.7, 'max_depth': 10}",Gilgel Abay
+QRF,"{'n_estimators': 1000, 'min_samples_split': 2, 'min_samples_leaf': 1, 'max_samples': 0.8, 'max_features': 0.7, 'max_depth': 40}",Gilgel Abay
+SRC,"{'a': np.float64(0.3759278534512546), 'b': np.float64(0.41932028434077645)}",Gumara
+GB,"{'subsample': 0.8, 'n_estimators': 4000, 'min_samples_split': 5, 'min_samples_leaf': 1, 'max_features': 0.7, 'max_depth': 10, 'learning_rate': 0.1}",Gumara
+RF,"{'n_estimators': 1000, 'min_samples_split': 5, 'min_samples_leaf': 1, 'max_samples': 1.0, 'max_features': 0.7, 'max_depth': 50}",Gumara
+QRF,"{'n_estimators': 1000, 'min_samples_split': 5, 'min_samples_leaf': 1, 'max_samples': 1.0, 'max_features': 0.7, 'max_depth': 50}",Gumara
