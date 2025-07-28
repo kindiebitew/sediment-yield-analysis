@@ -143,8 +143,6 @@ def engineer_features(intermittent_path, watershed_name, n_samples, is_excel=Fal
     df['MA_Discharge_3'] = df['Discharge'].rolling(window=3, min_periods=1).mean().bfill()
     df['Lag_Discharge_1'] = df['Discharge'].shift(1).bfill()
     df['Lag_Discharge_3'] = df['Discharge'].shift(3).bfill()
-    df['Lag_Rainfall_7'] = df['Rainfall'].shift(7).bfill()
-    df['Lag_Rainfall_14'] = df['Rainfall'].shift(14).bfill()
     df['Julian_Day'] = df['Date'].dt.dayofyear
     df['Sin_Julian'] = np.sin(2 * np.pi * df['Julian_Day'] / 365.25)
     df['Cos_Julian'] = np.cos(2 * np.pi * df['Julian_Day'] / 365.25)
