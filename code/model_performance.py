@@ -1,6 +1,6 @@
 # Script to evaluate model performance for SSC prediction in Gilgel Abay and Gumara watersheds.
-# Uses uniform hyperparameter tuning for GB, RF, QRF, includes ETo, Sin_Julian, Cos_Julian, uses 70%/30% split.
-# Processes all models for both watersheds, includes NaN checks, and fixes 1:1 line issue for Gilgel Abay.
+# Uses uniform hyperparameter tuning for GB, RF, QRF, uses 70%/30% split.
+# Processes all models for both watersheds.
 # Author: Kindie B. Worku
 # Date: 2025-07-19
 
@@ -92,7 +92,6 @@ def process_watershed(data_path, watershed_name, n_samples, test_size=0.3, qrf_o
             src_pred = np.clip(np.exp(src_model.predict(X_src)), 0, 100)
             src_test_pred = np.clip(np.exp(src_model.predict(X_test_src)), 0, 100)
             
-
             src_r2 = r2_score(y, src_pred)
             src_val_r2 = r2_score(y_test, src_test_pred)
             src_rmse = np.sqrt(mean_squared_error(y_test, src_test_pred))
